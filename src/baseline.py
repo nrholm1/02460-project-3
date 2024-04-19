@@ -47,11 +47,12 @@ class Baseline(torch.nn.Module):
         # reuse index sampled for N, since the distributions are indexed identically by design
         r = self.r_dist[1, N_idx]
 
-        # generate adjacency matrix
-        adj = torch.rand((N,N))
-        link_mask = adj <= r # select indices that pass the generation criteria
-        adj[link_mask] = 1
-        adj[~link_mask] = 0
+        # generate (symmetric) adjacency matrix
+        upper_triu = torch.triu_indices(N,N,1)
+        link_mask = torch.rand(upper_triu.shape[1]) <= r # select indices that pass the generation criteria
+        adj = torch.zeros((N, N))
+        adj[upper_triu[0,link_mask], upper_triu[1,link_mask]] = 1
+        adj[upper_triu[1,link_mask], upper_triu[0,link_mask]] = 1 # Since the graph is undirected, mirror the upper triangle to the lower triangle
 
         # ! return edge index instead?
         return adj.int() 
