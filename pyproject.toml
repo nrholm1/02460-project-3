@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "02460_Project3"
+version = "0.0.1"
+authors = [
+  { name="Andreas Fiehn", email="s204124@dtu.dk" },
+  { name="Niels Raunkjær Holm", email="s204503@dtu.dk"},
+  { name="Michael Harborg", email="s204138@dtu.dk" },
+  { name="Oliver Elmgreen", email="s204070@dtu.dk"}
+]
+description = "02460 Project 2"
+readme = "README.md"
+requires-python = ">=3.10"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
+]
+
+[project.urls]
+Homepage = "https://github.com/nrholm1/02460-project-3"
+Issues = "https://github.com/nrholm1/02460-project-3/issues"
+
+[tool.setuptools]
+packages = ["src"]
+
+[tool.setuptools.dynamic]
+dependencies = {file = ["requirements.txt"]}
+
+[tool.ruff]
+line-length = 120
