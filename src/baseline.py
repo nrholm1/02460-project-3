@@ -39,7 +39,10 @@ class Baseline(torch.nn.Module):
         return N_dist, r_dist
     
 
-    def sample_graph(self, symmetric):
+    def sample_edge_index(self, undirected):
+        """
+        Samples a single graph (unbatcheed) in the sparse representation, i.e. edge_index.
+        """
         # sample N according to computed empirical distribution
         N_idx = torch.multinomial(self.N_dist[1], num_samples=1)
         N = self.N_dist[0, N_idx].int().item()
@@ -47,43 +50,51 @@ class Baseline(torch.nn.Module):
         # reuse index sampled for N, since the distributions are indexed identically by design
         r = self.r_dist[1, N_idx]
 
-        # generate adjacency matrix
-        adj = torch.zeros((N, N))
-        if symmetric:
-            upper_triu = torch.triu_indices(N,N,1)
-            link_mask = torch.rand(upper_triu.shape[1]) <= r # select indices in upper triangular part that pass the generation criteria
-            adj[upper_triu[0,link_mask], upper_triu[1,link_mask]] = 1
-            adj[upper_triu[1,link_mask], upper_triu[0,link_mask]] = 1 # Since the graph is undirected, mirror the upper triangle to the lower triangle
+        if undirected:
+            upper_tri = torch.triu_indices(N,N,1)
+            link_mask = torch.rand(upper_tri.shape[1]) <= r # select indices in upper triangular part that pass the generation criteria
+            upper_tri = upper_tri[:, link_mask]
+            full = torch.hstack([
+                upper_tri, torch.vstack([upper_tri[1],upper_tri[0]])
+            ])
         else: # not symmetric
-            link_mask = torch.rand_like(adj) <= r # select indices that pass the generation criteria
-            adj[link_mask] = 1
-            adj.fill_diagonal_(0) # ! remove self-loops
+            upper_tri = torch.triu_indices(N,N,1)
+            lower_tri = torch.tril_indices(N,N,-1)
+            upper_link_mask = torch.rand(upper_tri.shape[1]) <= r # select indices in upper triangular part that pass the generation criteria
+            lower_link_mask = torch.rand(lower_tri.shape[1]) <= r # select indices in lower triangular part that pass the generation criteria
+            upper_tri = upper_tri[:, upper_link_mask]
+            lower_tri = lower_tri[:, lower_link_mask]
+            full = torch.hstack([upper_tri,lower_tri])
 
-        # ! return edge index instead?
-        return adj.int() 
+        return full
 
 
-    def forward(self, symmetric=True):
+    def forward(self, batch_size=1, undirected=True, return_adj=False):
         """
         Generate a graph according to the genrative process:
             1. sample according to empirical distribution computed for initialization dataset.
             2. generate links according to probability r, computed also for initialization dataset. 
         """
-        return self.sample_graph(symmetric=symmetric)
+        assert batch_size == 1, "Batched sampling not implemented!"
+        edge_index = self.sample_edge_index(undirected=undirected)
+        if return_adj: return to_dense_adj(edge_index)
+        else: return edge_index
 
 
 if __name__ == '__main__':
     dataset = get_mutag_dataset()
     dataloader = DataLoader(dataset, batch_size=1, shuffle=True) # dataloader for sampling single graphs
     sample_adj = lambda: to_dense_adj(next(iter(dataloader)).edge_index).squeeze() # sample and convert to dense adjacency matrix
+    sample_model = lambda _model: to_dense_adj(_model()).squeeze()
+    sample_model_directed = lambda _model: to_dense_adj(_model(undirected=False)).squeeze()
 
     baseline_model = Baseline(dataset)
 
     fig, axs = plt.subplots(1, 2, figsize=(12, 6))
 
     plot_adj(sample_adj(), axs[0], name="Sampled Graph")
-    # plot_adj(baseline_model(symmetric=False), axs[1], name="Generated Graph")
-    plot_adj(baseline_model(), axs[1], name="Generated Graph")
+    plot_adj(sample_model(baseline_model), axs[1], name="Generated Graph")
+    # plot_adj(sample_model_assym(baseline_model), axs[1], name="Generated Graph")
 
     plt.show()
 
