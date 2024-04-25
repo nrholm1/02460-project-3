@@ -6,11 +6,11 @@ from torch_geometric.utils import to_dense_adj, to_dense_batch
 class MessagePassingNN(nn.Module):
     """Simple graph neural network for graph classification. Code from exercises week 10
 
-    Keyword Arguments
-    -----------------
-        node_feature_dim : Dimension of the node features
-        state_dim : Dimension of the node states
-        num_message_passing_rounds : Number of message passing rounds
+    
+    Args:
+        node_feature_dim (int): Dimension of the node features
+        state_dim (int): Dimension of the node states
+        num_message_passing_rounds (int): Number of message passing rounds
     """
 
     def __init__(self, node_feature_dim, state_dim, num_message_passing_rounds):
@@ -47,20 +47,16 @@ class MessagePassingNN(nn.Module):
     def forward(self, x, edge_index, batch):
         """Evaluate neural network on a batch of graphs.
 
-        Parameters
-        ----------
-        x : torch.tensor (num_nodes x num_features)
-            Node features.
-        edge_index : torch.tensor (2 x num_edges)
-            Edges (to-node, from-node) in all graphs.
-        batch : torch.tensor (num_nodes)
-            Index of which graph each node belongs to.
-
-        Returns
-        -------
-        out : torch tensor (num_graphs)
-            Neural network output for each graph.
-
+        Args:
+            x : torch.tensor (num_nodes x num_features)
+                Node features.
+            edge_index : torch.tensor (2 x num_edges)
+                Edges (to-node, from-node) in all graphs.
+            batch : torch.tensor (num_nodes)
+                Index of which graph each node belongs to.
+        
+        Returns:
+            torch tensor: Neural network output for each graph.
         """
         # Extract number of nodes and graphs
         num_graphs = batch.max()+1
