@@ -5,7 +5,7 @@
 # GLOBALS                                                                       #
 #################################################################################
 
-PROJECT_NAME = 02460_Project2
+PROJECT_NAME = 02460_Project3
 PYTHON_VERSION = 3.10
 PYTHON_INTERPRETER = python
 
