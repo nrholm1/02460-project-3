@@ -3,10 +3,10 @@ from tqdm import tqdm
 from torch_geometric.utils import to_dense_adj
 import pdb
 
-def get_inputs(batch, edge_index):
+def get_inputs(batch, edge_index, max_num_nodes = None):
     ### Get Adjacency matrices and node masks
     num_nodes_per_graph = torch.unique(batch, return_counts=True)[1]
-    max_num_nodes = num_nodes_per_graph.max().item()
+    max_num_nodes = num_nodes_per_graph.max().item() if max_num_nodes is None else max_num_nodes
 
     Adj = to_dense_adj(edge_index, batch, max_num_nodes=max_num_nodes, batch_size=batch.max().item()+1)
     node_masks = torch.zeros_like(Adj)
@@ -70,5 +70,6 @@ class VAETrainer:
 
                 if (step+1) % len(self.data_loader) == 0:
                     epoch += 1
+        torch.save(self.model.state_dict(), 'VAE_weights.pt')
 
         

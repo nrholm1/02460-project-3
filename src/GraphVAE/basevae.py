@@ -132,7 +132,7 @@ class VAE(nn.Module):
         """
 
         Adj_pred = self.decoder(z).base_dist # predict adjacency matrix 
-        n_perms = 100
+        n_perms = 250
         rec_errors = torch.empty((n_perms))
         perms = []
 
@@ -180,13 +180,11 @@ class VAE(nn.Module):
         Parameters:
         n_samples: [int]
            Number of samples to generate.
-        """
-        
-        #  torch.triu(z, diagonal=1)
-        
-        
+        """ 
         z = self.prior().sample(torch.Size([n_samples]))
-        return self.decoder(z).sample()
+        decoder_sample = self.decoder(z).sample()
+        upper = torch.triu(decoder_sample, diagonal=1)
+        return upper + upper.transpose(1, 2)
 
     def forward(self, x, edge_index, batch, Adj, node_masks):
         """

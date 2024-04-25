@@ -16,13 +16,14 @@ class GraphStatistics:
 
     @property
     def clustercoefficient(self):
-        I = torch.eye(self.A.size(0))
+        I = torch.eye(self.A.size(1))
         D = self.degree * I
         A_cubed = self.A @ self.A @ self.A
         
         inverse_term = 1/torch.diag(D @ (D-I))
         inverse_term[inverse_term == torch.inf] = 0. # handles zero-division
         cc = (inverse_term * I) @ torch.diag(A_cubed)
+        pdb.set_trace()
         return cc
     
 def graph_statistics_example():

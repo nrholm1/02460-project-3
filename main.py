@@ -5,9 +5,10 @@ from torch_geometric.loader import DataLoader
 from src.GraphVAE.graphvae import build_model
 from src.vae_trainer import VAETrainer
 from src.utils import get_mutag_dataset
+from src.vae_trainer import get_inputs
 import pdb
 from torch_geometric.utils import to_dense_adj
-
+from src.graph_statistics import GraphStatistics
 
 def simple_permute_example():
     Adj_true = torch.zeros((5, 5))
@@ -30,7 +31,17 @@ def simple_permute_example():
     
     pdb.set_trace()
 
+def evaluate(model, dataloader, max_num_nodes, device):
+    model.eval()
 
+    _x = next(iter(dataloader))
+    Adj, node_masks = get_inputs(_x.batch, _x.edge_index, max_num_nodes)
+
+    data = next(iter(dataloader))
+    data = data.to(device)
+    loss = model(data.x, data.edge_index, data.batch, Adj, node_masks)
+
+    print(f'Finished evaluation!\nneg. ELBO: {loss.item():.4f}')
 
 if __name__ == '__main__':
     # Parse arguments
@@ -49,23 +60,52 @@ if __name__ == '__main__':
     parser.add_argument('--k', type=int, default=1, help='The sample size when using IWAE loss (default: %(default)s)')
     args = parser.parse_args()
     
-    node_feature_dim = 7 # hard coded since we only consider MUTAG
+    # below values are hard coded since we only consider MUTAG
+    node_feature_dim = 7 
     max_num_nodes = 28
+    min_num_nodes = 10
+
+    MUTAG_dataset = get_mutag_dataset(args.device)
+    
+    # Split into training and validation (same split as in exercise 10)
+    rng = torch.Generator().manual_seed(0)
+    train_dataset, validation_dataset, test_dataset = random_split(MUTAG_dataset, (100, 44, 44), generator=rng)
+    # Create dataloader for training and validation
+    train_loader = DataLoader(train_dataset, batch_size=100)
+            
+    validation_loader = DataLoader(validation_dataset, batch_size=44)
+    test_loader = DataLoader(test_dataset, batch_size=44)
 
     if args.mode == 'train':
         model = build_model(node_feature_dim, args.embedding_dim, args.n_rounds, args.latent_dim, max_num_nodes)
         optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
         
-        MUTAG_dataset = get_mutag_dataset(args.device)
-       
-        # Split into training and validation
-        rng = torch.Generator().manual_seed(0)
-        train_dataset, validation_dataset, test_dataset = random_split(MUTAG_dataset, (100, 44, 44), generator=rng)
-        # Create dataloader for training and validation
-        train_loader = DataLoader(train_dataset, batch_size=100)
-                
-        validation_loader = DataLoader(validation_dataset, batch_size=44)
-        test_loader = DataLoader(test_dataset, batch_size=44)
         trainer = VAETrainer(model, optimizer, train_loader, args.epochs, args.device)
         trainer.train()
     
+    elif args.mode == 'eval':
+        ### Evaluate negative ELBO
+        model = build_model(node_feature_dim, args.embedding_dim, args.n_rounds, args.latent_dim, max_num_nodes)
+        model.load_state_dict(torch.load('VAE_weights.pt', map_location=args.device))
+        evaluate(model, validation_loader, max_num_nodes=max_num_nodes, device=args.device)
+
+
+        ### Evaluate uniqueness
+        model = build_model(node_feature_dim, args.embedding_dim, args.n_rounds, args.latent_dim, max_num_nodes)
+        model.load_state_dict(torch.load('VAE_weights.pt', map_location=args.device))
+        samples = model.sample(1000)
+
+    elif args.mode == 'sample':
+        model = build_model(node_feature_dim, args.embedding_dim, args.n_rounds, args.latent_dim, max_num_nodes)
+        model.load_state_dict(torch.load('VAE_weights.pt', map_location=args.device))
+        samples = model.sample(64)
+        
+        stats = GraphStatistics(samples[0])
+        
+        print(f'Degree: {stats.degree}')
+        print(f'Eigenvector centrality: {stats.eigenvector_centrality}')
+        print(f'Cluster coefficient: {stats.clustercoefficient}')
+        
+        
+
+        
