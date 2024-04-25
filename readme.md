@@ -24,7 +24,7 @@
     - [X] Novelty
     - [ ] Uniqueness and Novelty (at the same time)
 - [ ] Simple graph statistics
-    - [ ] Node degree
-    - [ ] Clustering coefficient
-    - [ ] Eigenvector centrality
+    - [X] Node degree
+    - [X] Clustering coefficient
+    - [X] Eigenvector centrality
     - [ ] Plot histograms of these
