@@ -1,5 +1,5 @@
 import torch
-
+import pdb
 class GraphStatistics:
     def __init__(self, A: torch.tensor) -> None:
         self.A = A
@@ -12,7 +12,7 @@ class GraphStatistics:
     @property
     def eigenvector_centrality(self):
         e_vals, e_vecs = torch.linalg.eigh(self.A)
-        return e_vecs[torch.argmax(e_vals)]
+        return e_vecs[:, torch.argmax(e_vals)]
 
     @property
     def clustercoefficient(self):
@@ -28,7 +28,7 @@ class GraphStatistics:
 def graph_statistics_example():
     """
     Function that runs an MVP example of the GraphStatistics class.
-    The adjacency matrix is the one from slide 27 of week 9.
+    The adjacency matrix is the one from slide 27 of week 9 (example with cluster coefficient).
     """
     A_ex = torch.tensor([[0,1,0,0,0], 
                          [1,0,1,1,1],
@@ -41,5 +41,20 @@ def graph_statistics_example():
     print(f'Eigenvector centrality: {GS.eigenvector_centrality}')
     print(f'Cluster coefficient: {GS.clustercoefficient}\n')
 
+def graph_statistics_example2():
+    A = torch.tensor([[0,0,1,1,0,1,0],
+                      [0,0,0,0,1,1,1],
+                      [1,0,0,1,0,1,0],
+                      [1,0,1,0,0,1,0],
+                      [0,1,0,0,0,1,1],
+                      [1,1,1,1,1,0,1],
+                      [0,1,0,0,1,1,0]], dtype=torch.float32)
+    GS = GraphStatistics(A)
+    print('\nMVP Graph statistics example:\n')
+    print(f'Degree: {GS.degree}')
+    print(f'Eigenvector centrality: {GS.eigenvector_centrality}')
+    print(f'Cluster coefficient: {GS.clustercoefficient}\n')
+    
+
 if __name__ == '__main__':
-    graph_statistics_example()
+    graph_statistics_example2()
