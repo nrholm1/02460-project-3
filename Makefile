@@ -33,7 +33,7 @@ clean:
 # PROJECT RULES                                                                 #
 #################################################################################
 
-main = src/project2.py
+main = src/project3.py
 
 DEVICE = cpu
 

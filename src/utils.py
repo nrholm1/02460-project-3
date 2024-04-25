@@ -1,7 +1,6 @@
 import matplotlib.pyplot as plt
 import torch
 from torch_geometric.datasets import TUDataset
-from torch_geometric.utils import to_dense_adj
 
 def get_mutag_dataset(device:str='cpu'):
     dataset = TUDataset(root='../data/', name='MUTAG').to(device)

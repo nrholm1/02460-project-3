@@ -30,7 +30,7 @@ class Baseline(torch.nn.Module):
 
         # find uniform edge probabilities for each graph size (N)
         src_counts = (torch.unique(graphs.edge_index[0], return_counts=True)[1].repeat(num_graphs,1) * mask.float()).sum(1) # no. of edges with its corresponding node idx as source
-        edge_probs_unif = src_counts / nodes_per_graph**2 # ! assuming self-loops are allowed, (max possible #edges) = N^2
+        edge_probs_unif = src_counts / (nodes_per_graph*(nodes_per_graph-1)) # ! assuming self-loops are not allowed, (max possible #edges) = N*(N-1)
         probs_given_N = (edge_probs_unif * (nodes_per_graph == N_dist[0].unsqueeze(1)).float()).sum(1) / N_dist[1] # compute mean of uniform edge prob for each possible N
         r_dist = torch.vstack([N_dist[0], probs_given_N])
 
@@ -39,7 +39,7 @@ class Baseline(torch.nn.Module):
         return N_dist, r_dist
     
 
-    def sample_edge_index(self, undirected):
+    def sample_edge_index(self, undirected: bool):
         """
         Samples a single graph (unbatcheed) in the sparse representation, i.e. edge_index.
         """
@@ -51,10 +51,11 @@ class Baseline(torch.nn.Module):
         r = self.r_dist[1, N_idx]
 
         if undirected:
+            # r *= 2 # ! double probability for undirected, since we only assign to half ??
             upper_tri = torch.triu_indices(N,N,1)
             link_mask = torch.rand(upper_tri.shape[1]) <= r # select indices in upper triangular part that pass the generation criteria
             upper_tri = upper_tri[:, link_mask]
-            full = torch.hstack([
+            edge_index = torch.hstack([
                 upper_tri, torch.vstack([upper_tri[1],upper_tri[0]])
             ])
         else: # not symmetric
@@ -64,9 +65,9 @@ class Baseline(torch.nn.Module):
             lower_link_mask = torch.rand(lower_tri.shape[1]) <= r # select indices in lower triangular part that pass the generation criteria
             upper_tri = upper_tri[:, upper_link_mask]
             lower_tri = lower_tri[:, lower_link_mask]
-            full = torch.hstack([upper_tri,lower_tri])
+            edge_index = torch.hstack([upper_tri,lower_tri])
 
-        return full
+        return edge_index
 
 
     def forward(self, batch_size=1, undirected=True, return_adj=False):
@@ -94,7 +95,7 @@ if __name__ == '__main__':
 
     plot_adj(sample_adj(), axs[0], name="Sampled Graph")
     plot_adj(sample_model(baseline_model), axs[1], name="Generated Graph")
-    # plot_adj(sample_model_assym(baseline_model), axs[1], name="Generated Graph")
+    # plot_adj(sample_model_directed(baseline_model), axs[1], name="Generated Graph")
 
     plt.show()
 
