@@ -3,7 +3,6 @@ import torch.nn as nn
 import torch.distributions as td
 from torch_geometric.utils import to_dense_adj
 import pdb
-from torch.nn.functional import binary_cross_entropy_with_logits
 
 class GaussianPrior(nn.Module):
     def __init__(self, M):
@@ -107,57 +106,64 @@ class VAE(nn.Module):
         self.decoder = decoder
         self.encoder = encoder
         self.k = k
-        
-    def iwae(self, x):
-        """
-        Compute the IWAE for the given batch of data.
-
-        Parameters:
-        x: [torch.Tensor] 
-           A tensor of dimension `(batch_size, feature_dim1, feature_dim2, ...)`
-        """
-        x = x.repeat(self.k, 1, 1)
-        q = self.encoder(x)
-        h = q.rsample()
-
-        log_p_x_h = self.decoder(h).log_prob(x)
-        log_p_h = self.prior().log_prob(h) 
-        log_q_h_x = q.log_prob(h)
-        marginal_likelihood = (log_p_x_h + log_p_h - log_q_h_x).view(self.k, x.size(0)//self.k)
-        iwae = (torch.logsumexp(marginal_likelihood, dim=0) - torch.log(torch.tensor(self.k))).mean()
-        return iwae
     
-    def calc_log_prob(self, z, Adj, node_masks):
-        logits = self.decoder(z)
-        log_probs = logits.base_dist.log_prob(Adj)
-        return log_probs[node_masks].view(-1, Adj.size(0), Adj.size(1)).sum(dim=-1)
+    def calc_log_prob(self, Adj_pred, Adj, node_masks):
+        """
+        Function that calculates p(x|z) allowing for masking the calculated probabilities.
+        """
+        log_probs = Adj_pred.log_prob(Adj)
+        masked_log_probs = log_probs[node_masks == 1]
+        assert masked_log_probs.size(0) == torch.sum(node_masks), 'Number of unmasked nodes does not match the size of the masked log_probs!'
+        return masked_log_probs.sum(dim=-1)
+    
+    def permute_adjacency_matrix(self, Adj_pred, perm):
+        logits = Adj_pred.logits
+        # permute rows and columns to ensure permuted logits are symmetric
+        logits = torch.index_select(logits, 1, perm)
+        logits = torch.index_select(logits, 2, perm)
+        # return as td.Bernoulli such that .log_prob method is defined
+        return td.Bernoulli(logits=logits)
+    
 
-    def elbo(self, x, edge_index, batch):
+    def simple_reconstruction_with_perm(self, z, Adj, node_masks):
+        """
+        Calculates n_perms random permutations of the predicted adjacency matrix. 
+        Returns: The lowest reconstruction error.
+        """
+
+        Adj_pred = self.decoder(z).base_dist # predict adjacency matrix 
+        n_perms = 100
+        rec_errors = torch.empty((n_perms))
+        perms = []
+
+        for i in range(n_perms):
+            perm = torch.randperm(Adj.size(2)) # sample random permutation
+            Adj_perm = self.permute_adjacency_matrix(Adj_pred, perm) # permute predicted A
+            rec_error = self.calc_log_prob(Adj_perm, Adj, node_masks) # calculate reconstruction error
+            # store permutation and reconstruction error
+            perms.append(perm)
+            rec_errors[i] = rec_error
+        
+        # best_perm = perms[torch.argmax(rec_errors)]
+        
+        return torch.max(rec_errors)
+
+    def elbo(self, x, edge_index, batch, Adj, node_masks):
         """
         Compute the ELBO for the given batch of data.
 
         Parameters:
-        x: [torch.Tensor] 
-           A tensor of dimension `(batch_size, feature_dim1, feature_dim2, ...)`
+            x:
+            edge_index:
+            batch:
+            Adj: A 3D tensor of size batch_size x max_num_nodes x max_num_nodes
+            node_masks: A 3D tensor of the same size as Adj 
         """
         q = self.encoder(x, edge_index, batch)
         z = q.rsample() # reparameterization
 
-
-        ### Get Adjacency matrices and node masks
-        num_nodes_per_graph = torch.unique(batch, return_counts=True)[1]
-        max_num_nodes = num_nodes_per_graph.max().item()
-
-        Adj = to_dense_adj(edge_index, batch, max_num_nodes=max_num_nodes,
-                           batch_size=batch.max().item()+1)
-        node_masks = torch.zeros_like(Adj)
-        
-        for i, m in enumerate(num_nodes_per_graph):
-            node_masks[i, :m, :m] = 1
-        
-        node_masks = node_masks.to(torch.long)
-
-        RE = self.calc_log_prob(z, Adj, node_masks) #self.decoder(z)[node_masks].log_prob(Adj[node_masks])
+        RE = self.simple_reconstruction_with_perm(z, Adj, node_masks)
+        # RE = self.calc_log_prob(z, Adj, node_masks) #self.decoder(z)[node_masks].log_prob(Adj[node_masks])
         KL = q.log_prob(z) - self.prior().log_prob(z)
 
         elbo = (RE - KL).mean()
@@ -175,17 +181,18 @@ class VAE(nn.Module):
         n_samples: [int]
            Number of samples to generate.
         """
+        
         #  torch.triu(z, diagonal=1)
+        
         
         z = self.prior().sample(torch.Size([n_samples]))
         return self.decoder(z).sample()
 
-    def forward(self, x, edge_index, batch):
+    def forward(self, x, edge_index, batch, Adj, node_masks):
         """
         Compute the negative ELBO for the given batch of data.
 
         Parameters:
-        x: [torch.Tensor] 
-           A tensor of dimension `(batch_size, feature_dim1, feature_dim2)`
+
         """
-        return -self.elbo(x, edge_index, batch) if self.k == 1 else -self.iwae(x)
+        return -self.elbo(x, edge_index, batch, Adj, node_masks)

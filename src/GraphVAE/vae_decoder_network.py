@@ -8,13 +8,9 @@ class DecoderNetwork(nn.Module):
         self.num_nodes = num_nodes
         self.M = M
 
-        self.net = torch.nn.Sequential(nn.Linear(self.M, self.M),
+        self.net = torch.nn.Sequential(nn.Linear(self.M, self.num_nodes),
                                        nn.ReLU(),
-                                       nn.Linear(self.M, self.num_nodes),
-                                       nn.ReLU(),
-                                       nn.Linear(self.num_nodes, self.num_nodes*self.num_nodes // 2),
-                                       nn.ReLU(),
-                                       nn.Linear(self.num_nodes*self.num_nodes // 2, self.num_nodes*self.num_nodes))
+                                       nn.Linear(self.num_nodes, self.num_nodes*self.num_nodes))
 
     def forward(self, Z):
         """

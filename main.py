@@ -8,6 +8,30 @@ from src.utils import get_mutag_dataset
 import pdb
 from torch_geometric.utils import to_dense_adj
 
+
+def simple_permute_example():
+    Adj_true = torch.zeros((5, 5))
+    mask_true = torch.zeros((5, 5))
+    mask_true[:3, :3] = 1
+    Adj_true[0, 1] = 1
+    Adj_true[1, 0] = 1
+    Adj_true[2, 1] = 1
+    Adj_true[1, 2] = 1
+
+    Adj_pred = torch.zeros((5, 5))
+    Adj_pred[3, 1] = 1
+    Adj_pred[1, 3] = 1
+    Adj_pred[2, 4] = 1
+    Adj_pred[4, 2] = 1
+
+    perm = torch.randperm(5)
+    Adj_perm = torch.index_select(Adj_pred, 0, perm)
+    Adj_perm = torch.index_select(Adj_perm, 1, perm)
+    
+    pdb.set_trace()
+
+
+
 if __name__ == '__main__':
     # Parse arguments
     
@@ -27,6 +51,7 @@ if __name__ == '__main__':
     
     node_feature_dim = 7 # hard coded since we only consider MUTAG
     max_num_nodes = 28
+
     if args.mode == 'train':
         model = build_model(node_feature_dim, args.embedding_dim, args.n_rounds, args.latent_dim, max_num_nodes)
         optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
@@ -38,11 +63,7 @@ if __name__ == '__main__':
         train_dataset, validation_dataset, test_dataset = random_split(MUTAG_dataset, (100, 44, 44), generator=rng)
         # Create dataloader for training and validation
         train_loader = DataLoader(train_dataset, batch_size=100)
-        
-        # _x = next(iter(train_loader))
-        # Adj = to_dense_adj(_x.edge_index, _x.batch, max_num_nodes=max_num_nodes, batch_size=100)
-        # pdb.set_trace()
-
+                
         validation_loader = DataLoader(validation_dataset, batch_size=44)
         test_loader = DataLoader(test_dataset, batch_size=44)
         trainer = VAETrainer(model, optimizer, train_loader, args.epochs, args.device)
