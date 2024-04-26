@@ -33,9 +33,10 @@ clean:
 # PROJECT RULES                                                                 #
 #################################################################################
 
-main = src/project3.py
+vae-main = main.py
+gan-main = src/graphgan.py
 
 DEVICE = cpu
 
-train:
-	$(PYTHON_INTERPRETER) $(main) train
+train-gan:
+	$(PYTHON_INTERPRETER) $(gan-main)

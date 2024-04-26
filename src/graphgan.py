@@ -1,4 +1,7 @@
+import argparse
 from functools import cached_property
+import pdb
+from matplotlib import pyplot as plt
 from tqdm import tqdm
 
 import torch
@@ -6,8 +9,8 @@ import torch.distributions as td
 from torch_geometric.loader import DataLoader
 from torch_geometric.data import Data, Batch
 
-from src.gnn import GanMPN, GraphConvNN
-from src.utils import get_mutag_dataset
+from src.gnn import GAN_MPNN, GraphConvNN
+from src.utils import get_mutag_dataset, plot_adj
 
 
 class NDist:
@@ -60,7 +63,7 @@ class MultiLayerPerceptron(torch.nn.Module):
 class Generator(torch.nn.Module):
     # TODO: outputs (potentially padded) max size graph
 
-    def __init__(self, gnn: GanMPN|GraphConvNN|MultiLayerPerceptron, ndist: NDist, state_dim: int = 16):
+    def __init__(self, gnn: GAN_MPNN|GraphConvNN|MultiLayerPerceptron, ndist: NDist, state_dim: int = 16):
         super().__init__()
         self.gnn = gnn
         self.ndist = ndist
@@ -88,14 +91,13 @@ class Generator(torch.nn.Module):
             ...
 
     def backprop_through_sample_op(self):
-        # manually allow gradients to flow back through the Bernoulli sample operation using "pass-through" operator
-        self._last_probs_for_grad.backward(gradient=self._last_triu_samples)
+        """ Manually pass gradients straight through the non-differentiable Bernoulli sample operation. """
+        self.__last_probs_for_grad.backward(gradient=self.__last_triu_samples)
 
     @cached_property
     def triu_idx(self):
         return torch.triu_indices(max_num_nodes,max_num_nodes,1)
     
-    # @cached_property
     def static_x(self, num_nodes: int):
         return torch.ones((num_nodes,7))
 
@@ -106,78 +108,81 @@ class Generator(torch.nn.Module):
         
         triu_edges.requires_grad = True # needed for passing backprop through Bernoulli sample operation 
 
-        batch_size = num_samples
         edge_indices = []
         batches = []
         node_counter = 0
-        for i in range(batch_size):
+        for i,cur_n in enumerate(ns):
+            # Full 28 node graphs are generated (max size in empirical dist.), then masked
             edge_index = self.triu_idx[:,triu_edges[i].bool()]
-            # TODO TODO TODO: Right now we generate full 28x28 matrices. We should mask out top n rows and columns
-            # concat with reverse edge index
-            edge_index = torch.hstack([edge_index, torch.vstack([edge_index[1], edge_index[0]])])
+            mask = torch.all(edge_index < cur_n, dim=0) # mask out top n rows and columns
+            edge_index = edge_index[:,mask]
+            edge_index = torch.hstack([edge_index, torch.vstack([edge_index[1], edge_index[0]])]) # make symmetric
             edge_indices.append(edge_index + node_counter)
-            batches.append(torch.tensor(ns[i]*[i]))
-            node_counter += ns[i]
+            batches.append(torch.tensor(cur_n*[i]))
+            node_counter += cur_n
         batched_edge_index = torch.hstack(edge_indices)
         batch = torch.hstack(batches)
 
         # save distribution parametrization for backprop
-        self._last_triu_samples = triu_edges
-        self._last_probs_for_grad = triu_edge_dist.base_dist.probs 
+        self.__last_triu_samples = triu_edges
+        self.__last_probs_for_grad = triu_edge_dist.base_dist.probs 
 
         x = self.static_x(node_counter)
         return Batch(x=x, edge_index=batched_edge_index, batch=batch)
 
 
 
-
-        
 class Discriminator(torch.nn.Module):
-    def __init__(self, gnn: GanMPN|GraphConvNN):
+    def __init__(self, gnn: GAN_MPNN|GraphConvNN):
         super().__init__()
         self.gnn = gnn
-        # TODO: linear layer to output scalar
         bernoulli_linkage = torch.nn.Sigmoid # ! NOTE: could be source of instability! 
-        # Project from state_dim to scalar and apply sigmoid
+        # Project from state_dim to scalar and apply sigmoid => i.e. output probability
         self.score_model = torch.nn.Sequential(torch.nn.Linear(self.gnn.state_dim, 1), bernoulli_linkage())
 
     def forward(self, graphs: Batch):
-        x_zeros = torch.ones_like(graphs.x) # ! NOTE: Verify that this does not break stuff
-        state = self.gnn(x_zeros, graphs.edge_index, graphs.batch)
+        static_x = torch.ones_like(graphs.x) # ! NOTE: Verify that this does not break stuff
+        state = self.gnn(static_x, graphs.edge_index, graphs.batch)
         return self.score_model(state)
+
 
 
 class GraphGAN(torch.nn.Module):
     def __init__(self,
                  gen_net: Generator,
-                 disc_net: Discriminator):
+                 disc_net: Discriminator,
+                 eps: float = 1e-9):
         super().__init__()
         self.generator = gen_net
         self.discriminator = disc_net
         self.state_dim = self.generator.state_dim
+        self.eps = eps # ! add to log terms to counter -inf's and for numerical stability
 
-    def forward(self, graphs: Batch):
+    def forward(self, graphs: Batch, disc: bool):
         """
         @params:
             x: Graph - batched real input data.
+            disc: bool - flag for loss mode, i.e. for discriminator or generator
         """
         m = graphs.batch.max().long().item() + 1 # number of samples for both real and fake samples
 
-        d_x = self.discriminator(graphs) # prob of real data
+        # for both training modes, we need to compute adversarial loss
+        d_g_z = self.discriminator(self.generator(num_samples=m))      # prob of generated data
+        adv_loss = torch.log(d_g_z + self.eps).mean(dim=0)             # loss for discriminator vs generator
+
+        if disc: # if training discriminator, we need to optimize on real data as well
+            d_x = self.discriminator(graphs)                           # prob of real data
+            disc_real_loss = torch.log(1 - d_x + self.eps).mean(dim=0) # loss for discriminator on real data
+            return -(disc_real_loss + adv_loss) # ! return negated, since we want to maximize this!
         
-        d_g_z = self.discriminator(self.generator(num_samples=m)) # prob of generated data
-
-        disc_loss = torch.log(1 - d_x).mean(dim=0) # loss for discriminator on real data
-        adv_loss = torch.log(d_g_z).mean(dim=0)    # loss for discriminator vs generator
-
-        return disc_loss + adv_loss
+        return adv_loss # else return just adversarial loss
 
 
 
 def train_gan(gan: GraphGAN, 
               dataloader: DataLoader,
               n_epochs: int = 1_000,
-              disc_train_steps: int = 1,
+              disc_train_steps: int = 3,
               ):
 
     # lambda to obtain new shuffled data loader each time it is called
@@ -185,125 +190,94 @@ def train_gan(gan: GraphGAN,
 
     # define optimizers for both discriminator and generator
     disc_optimizer = torch.optim.Adam(gan.discriminator.parameters(), lr=1e-3)
-    gen_optimizer = torch.optim.Adam(gan.generator.parameters(), lr=1e-3)
+    gen_optimizer =  torch.optim.Adam(gan.generator.parameters(),     lr=1e-3)
 
-    for epoch in range(n_epochs):
-        datas = get_shuffled_data()
+    with tqdm(range(n_epochs)) as pbar:
+        for epoch in pbar:
+            datas = get_shuffled_data()
 
-        for k in range(disc_train_steps):
+            for k in range(disc_train_steps):
+                gen.eval() # disable gradients for generator
+                data = next(datas)
+                combined_loss = gan(data, disc = True)
+                combined_loss.backward()
+                disc_optimizer.step()
+                disc_optimizer.zero_grad()
+                gen.train() # reenable gradients for generator
+
+            # Generator training step
+            disc.eval() # disable gradients for discriminator
             data = next(datas)
-            loss = gan(data)
-            loss.backward()
-            disc_optimizer.step()
-            disc_optimizer.zero_grad()
-        
-        data = next(datas)
-        loss = gan(data)
-        loss.backward()
-        gan.generator.backprop_through_sample_op() # manually handle backprop for the generator through Bernoulli sample
-        gen_optimizer.step()
-        gen_optimizer.zero_grad()
+            adv_loss = gan(data, disc = False)
+            adv_loss.backward()
+            disc.train() # reenable gradients for discriminator
 
+            gan.generator.backprop_through_sample_op()  # manually handle backprop for the generator through Bernoulli sample
+            gen_optimizer.step()
+            gen_optimizer.zero_grad()
+
+            pbar.set_description(f"Adv-loss: {adv_loss.item():.5e}, Combined-loss: {combined_loss.item():.5e}")
 
 
 
 
 if __name__ == '__main__':
+    # parser = argparse.ArgumentParser()
+    # parser.add_argument('mode', type=str, default='train', choices=['train', 'sample'], help='what to do when running the script (default: %(default)s)')
+    # parser.add_argument('--model', type=str, default='model.pt', help='file to save model to or load model from (default: %(default)s)')
+    # parser.add_argument('--device', type=str, default='cpu', choices=['cpu', 'cuda', 'mps'], help='torch device (default: %(default)s)')
+    # parser.add_argument('--batch-size', type=int, default=16, metavar='N', help='batch size for training (default: %(default)s)')
+    # parser.add_argument('--n-epochs', type=int, default=1000, metavar='N', help='number of epochs to train (default: %(default)s)')
+    # parser.add_argument('--mp-rounds', type=int, default=5, metavar='N', help='Number of message passing rounds encoder network (default: %(default)s)')
+    # parser.add_argument('--state-dim', type=int, default=16, metavar='N', help='dimension of latent variable (default: %(default)s)')
+    # args = parser.parse_args()
+
+    model_dir = "models" # TODO: add to argparse
+    model_state_dict_path = "GraphGAN.pt" # TODO: add to argparse
+
+    """
+    ================================================Train================================================
+    """
+    # ! hyperparams / training specific
+    state_dim = 16 # TODO: add to argparse
+    message_passing_rounds = 5 # TODO: add to argparse
+    n_epochs = 3_000 # TODO: add to argparse
+    batch_size = 10 # TODO: add to argparse
 
     dataset = get_mutag_dataset()
-    dataloader = DataLoader(dataset, batch_size=10, shuffle=True)
+    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
+    node_feature_dim = 7 # const
 
-    # get biggest node count
+
+    # create distribution of node counts over the dataset
     ndist = NDist(dataset)
     max_num_nodes = ndist.max_nodes
     max_output_dim = int(max_num_nodes*(max_num_nodes-1)/2)
 
-    state_dim = 16
-    gennet = MultiLayerPerceptron(state_dim=state_dim, max_output_dim=max_output_dim)
-    gen = Generator(gennet, ndist=ndist, state_dim=state_dim)
-    batch = gen(3)
-    mpnn = GanMPN(node_feature_dim=7, state_dim=state_dim, num_message_passing_rounds=5)
+    # create generator and discriminator
+    gen_net = MultiLayerPerceptron(state_dim=state_dim, max_output_dim=max_output_dim)
+    gen = Generator(gen_net, ndist=ndist, state_dim=state_dim)
+
+
+    mpnn = GAN_MPNN(node_feature_dim=node_feature_dim, state_dim=state_dim, num_message_passing_rounds=message_passing_rounds)
     disc = Discriminator(mpnn)
 
+    # create and train GAN
     gan = GraphGAN(gen, disc)
+    train_gan(gan, dataloader, n_epochs=n_epochs)
 
+    torch.save(gan.state_dict(), f'{model_dir}/{model_state_dict_path}')
 
+    print("\ntraining done!\n")
+    pdb.set_trace()
+    """
+    ========================================Generate and Visualize========================================
+    """
+    torch.load(f'{model_dir}/{model_state_dict_path}')
 
-    batch_size = 3
+    fig, axs = plt.subplots(1, 2, figsize=(12, 6))
 
-    # ns, samples = gen.sample(batch_size)
+    # plot_adj(sample_adj(), axs[0], name="Sampled Graph")
+    # plot_adj(sample_model(baseline_model), axs[1], name="Generated Graph")
 
-    # idx = torch.triu_indices(max_num_nodes,max_num_nodes,1)
-
-    # mask triu indices with samples to get edge_index
-
-    # edge_indices = []
-    # batches = []
-    # for i in range(batch_size):
-    #     edge_index = idx[:,samples[i].bool()]
-    #     # concat with reverse edge index
-    #     edge_index = torch.hstack([edge_index, torch.vstack([edge_index[1],edge_index[0]])])
-    #     edge_indices.append(edge_index)
-    #     batches.append(torch.tensor(ns[i]*[i]))
-    # batched_edge_index = torch.hstack(edge_indices)
-    # batched_batch = torch.hstack(batches)
-
-
-
-    # Convert to dense adj
-    # dense_adj = torch.zeros((max_num_nodes,max_num_nodes))
-    # dense_adj[edge_index[0],edge_index[1]] = 1
-
-    
-    # adjs = torch.zeros((2,max_num_nodes,max_num_nodes)).long()
-    # adjs[:,idx[0],idx[1]] = samples
-    # adjs[:,idx[1],idx[0]] = samples
-
-    # print(torch.all(adjs[0] == dense_adj)) # should be True
-
-    # import matplotlib.pyplot as plt
-
-
-    # # plot adjacencies side by side
-    # fig, axs = plt.subplots(1,2)
-    # axs[0].spy(adjs[0])
-    # axs[1].spy(dense_adj)
-    # plt.show()
-
-        
-
-    batch = next(iter(dataloader))
-    disc(batch)
-
-
-    train_gan(gan, dataloader)
-
-    # torch.save(gan.state_dict(), 'models/gan.pt')
-
-
-    
-    # Make dummy example of upper triangular edges 
-    # torch_test = torch.tensor([[0, 1, 0, 0, 0, 0],[1, 1, 0, 0, 0, 0]])
-    torch_test = torch.tensor([0, 1, 0, 0, 0, 0])
-
-
-    # num_tri = n**2/2-n
-    
-
-    t = torch_test.size(0)
-    n = int((1 + (1 + 8*t)**0.5)/2)
-
-    adj = torch.zeros((n,n)).long()
-    triu_indices = torch.triu_indices(n,n,1)
-    adj[triu_indices[0], triu_indices[1]] = torch_test
-
-
-
-
-
-
-
-    # convert torch test to edge index  
-
-    
-
+    plt.show()

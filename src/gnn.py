@@ -5,7 +5,7 @@ from src.utils import get_mutag_dataset
 from torch_geometric.loader import DataLoader
 import pdb
 
-class GanMPN(nn.Module):
+class GAN_MPNN(nn.Module):
     """Simple graph neural network for graph classification. Code from exercises week 10
 
     
