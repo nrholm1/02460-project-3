@@ -6,7 +6,7 @@ from torch_geometric.loader import DataLoader
 import pdb
 
 class GAN_MPNN(nn.Module):
-    """Simple graph neural network for graph classification. Code from exercises week 10
+    """Simple graph neural network (message passing variant). Code from exercises week 10.
 
     
     Args:
@@ -46,6 +46,11 @@ class GAN_MPNN(nn.Module):
         # State output network
         # self.output_net = torch.nn.Linear(self.state_dim, 1)
 
+    def get_input_grad(self):
+        return self.last_init_state.grad # ! how to accumulate gradients from message/update nets? I.e. quite complex
+        # raise NotImplementedError("Not implemented for message passing net yet!")
+
+
     def forward(self, x, edge_index, batch):
         """Evaluate neural network on a batch of graphs.
 
@@ -65,8 +70,10 @@ class GAN_MPNN(nn.Module):
         num_nodes = batch.shape[0]
 
         # Initialize node state from node features
-        state = self.input_net(x)
-        # state = x.new_zeros([num_nodes, self.state_dim]) # Uncomment to disable the use of node features
+        # state = self.input_net(x)
+        state = x.new_zeros([num_nodes, self.state_dim]) # Uncomment to disable the use of node features
+        state.requires_grad = True
+        self.last_init_state = state # used for grad
 
         # Loop over message passing rounds
         for r in range(self.num_message_passing_rounds):
@@ -172,6 +179,7 @@ class MessagePassingNN(nn.Module):
         out = self.output_net(graph_state).flatten()
         return out
 
+
 class GraphConvNN(nn.Module):
     """Simple graph convolution for graph classification. Code from exercises week 11
 
@@ -196,9 +204,12 @@ class GraphConvNN(nn.Module):
 
         self.cached = False
 
+    def get_input_grad(self):
+        raise NotImplementedError("Not implemented for GCN net yet!")
+        # return self.h.grad
+
     def forward(self, x, edge_index, batch):
         """Evaluate neural network on a batch of graphs.
-
 
         Args:
             x (torch.tensor): Node features.
