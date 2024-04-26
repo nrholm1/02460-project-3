@@ -39,4 +39,7 @@ gan-main = src/graphgan.py
 DEVICE = cpu
 
 train-gan:
-	$(PYTHON_INTERPRETER) $(gan-main)
+	$(PYTHON_INTERPRETER) $(gan-main) train
+
+sample-gan:
+	$(PYTHON_INTERPRETER) $(gan-main) sample

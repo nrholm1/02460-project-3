@@ -6,11 +6,13 @@ import torch
 import torch.distributions as td
 from torch_geometric.loader import DataLoader
 from torch_geometric.data import Batch
-from torch_geometric.utils import to_dense_adj
+from torch_geometric.utils import to_dense_adj, to_dense_batch
 
 from src.utils import get_mutag_dataset, plot_adj
 from src.gnn import GAN_MPNN, GraphConvNN
 
+torch.set_default_dtype(torch.float64)
+torch.set_default_tensor_type(torch.DoubleTensor)
 
 class NDist:
     """
@@ -45,8 +47,9 @@ class NDist:
 class MultiLayerPerceptron(torch.nn.Module):
     def __init__(self, state_dim: int, max_output_dim: int, num_hidden = 128):
         super().__init__()
+        state_dim_p_1 = state_dim + 1 # ! add extra NN connection for number of nodes conditioning
         self.layers = torch.nn.Sequential(
-            torch.nn.Linear(state_dim, num_hidden),
+            torch.nn.Linear(state_dim_p_1, num_hidden),
             torch.nn.ReLU(),
             torch.nn.Linear(num_hidden, num_hidden),
             torch.nn.ReLU(),
@@ -75,8 +78,11 @@ class Generator(torch.nn.Module):
     def sample_adj_dist(self, sample_shape: torch.Size):
         z = self.seed_dist.sample(sample_shape=sample_shape)
         ns = self.ndist.sample(sample_shape)
-        # TODO stack n to z and update gnn to support it 
-        bernoulli_params = self.sigmoid(self.gnn(z.squeeze(-1)))
+        
+        # stack n and z to provide some conditioning for the generator
+        ns_conc = ns if ns.dim() == 2 else ns.unsqueeze(1)
+        inp = torch.hstack([z.squeeze(-1), ns_conc])
+        bernoulli_params = self.sigmoid(self.gnn(inp))
         return ns, td.Independent(td.Bernoulli(bernoulli_params), 1)
 
 
@@ -85,9 +91,8 @@ class Generator(torch.nn.Module):
         batches = []
         node_counter = 0
         for i,cur_n in enumerate(ns):
-            # Full 28 node graphs are generated (max size in empirical dist.), then masked
-            edge_index = self.triu_idx[:,triu_edges[i].bool()]
-            mask = torch.all(edge_index < cur_n, dim=0) # mask out top n rows and columns
+            edge_index = self.triu_idx[:,triu_edges[i].bool()] # generate max size graph (given ndist)
+            mask = torch.all(edge_index < cur_n, dim=0)        # mask out edges for nodes with higher id than graph size
             edge_index = edge_index[:,mask]
             edge_index = torch.hstack([edge_index, torch.vstack([edge_index[1], edge_index[0]])]) # make symmetric
             edge_indices.append(edge_index + node_counter)
@@ -112,14 +117,16 @@ class Generator(torch.nn.Module):
             return Batch(x=x, edge_index=batched_edge_index, batch=batch)
 
 
-    def backprop_through_sample_op(self, grad):
+    def backprop_through_sample_op(self, grad: torch.Tensor, scaling_factor: float = 1.):
         """ Manually pass gradients straight through the non-differentiable Bernoulli sample operation. """
-        last_m = self._last_batch.max()+1
-        acc_grads = torch.zeros((last_m, self.triu_size))
-        for i in range(last_m): 
-            acc_grad = grad[self._last_batch == i].mean(dim=1)
-            acc_grads[i,:len(acc_grad)] = acc_grad
-        self._last_probs_for_grad_pass.backward(gradient=acc_grads)
+        reshaped_grad = torch.zeros_like(self._last_probs_for_grad_pass)
+        for i,n in enumerate(self._last_ns):
+            triu_idx = torch.triu_indices(n,n,1)
+            reshaped_grad[i,:triu_idx.shape[1]] = grad[i,:n,:n][triu_idx[0],triu_idx[1]]
+        # normalize and scale
+        norm = torch.norm(reshaped_grad, p=2, dim=1, keepdim=True)
+        scaled_normalized_grad = scaling_factor * reshaped_grad / (norm + 1e-6)
+        self._last_probs_for_grad_pass.backward(gradient=scaled_normalized_grad)
 
     @cached_property
     def triu_size(self):
@@ -143,6 +150,7 @@ class Generator(torch.nn.Module):
         self._last_probs_for_grad_pass = triu_edge_dist.base_dist.probs
         # save batch (node indexing) to know which grads corresponds to the correct graph sample
         self._last_batch = batch
+        self._last_ns = ns
 
         return Batch(x=x, edge_index=batched_edge_index, batch=batch)
 
@@ -152,16 +160,20 @@ class Discriminator(torch.nn.Module):
     def __init__(self, gnn: GAN_MPNN|GraphConvNN):
         super().__init__()
         self.gnn = gnn
-        bernoulli_linkage = torch.nn.Sigmoid # ! NOTE: could be source of instability! 
+        nonlinearity = torch.nn.Sigmoid # ! NOTE: could be source of instability! 
+        # nonlinearity = torch.nn.Tanh # ! NOTE: could be source of instability! 
+        # nonlinearity = torch.nn.LeakyReLU # ! NOTE: could be source of instability! 
         # Project from state_dim to scalar and apply sigmoid => i.e. output probability
-        self.score_model = torch.nn.Sequential(torch.nn.Linear(self.gnn.state_dim, 1), bernoulli_linkage())
+        self.score_model = torch.nn.Sequential(torch.nn.Linear(self.gnn.state_dim, 1), nonlinearity())
+        # self.score_model = torch.nn.Sequential(torch.nn.Linear(self.gnn.state_dim, 1))
 
     def get_input_grad(self):
         return self.gnn.get_input_grad()
 
     def forward(self, graphs: Batch):
+
         static_x = torch.ones_like(graphs.x) # ! NOTE: Verify that this does not break stuff
-        state = self.gnn(static_x, graphs.edge_index, graphs.batch)
+        state = self.gnn(static_x.double(), graphs.edge_index, graphs.batch)
         return self.score_model(state)
 
 
@@ -170,15 +182,18 @@ class GraphGAN(torch.nn.Module):
     def __init__(self,
                  gen_net: Generator,
                  disc_net: Discriminator,
-                 eps: float = 1e-9):
+                 eps: float = 1e-9,
+                 grad_scaling_factor: float = 1.):
         super().__init__()
         self.generator = gen_net
         self.discriminator = disc_net
         self.state_dim = self.generator.state_dim
         self.eps = eps # ! add to log terms to counter -inf's and for numerical stability
+        self.grad_scaling_factor = grad_scaling_factor
 
     def backprop_through_discontinuity(self):
-        self.generator.backprop_through_sample_op(grad=self.discriminator.get_input_grad())
+        self.generator.backprop_through_sample_op(grad=self.discriminator.get_input_grad(), 
+                                                  scaling_factor=self.grad_scaling_factor)
 
     def forward(self, graphs: Batch, disc: bool):
         """
@@ -191,11 +206,13 @@ class GraphGAN(torch.nn.Module):
         # for both training modes, we need to compute adversarial loss
         D_G_z = self.discriminator(self.generator(num_samples=m))      # prob that generated data is fake D(G(z))
         adv_loss = torch.log(D_G_z + self.eps).mean(dim=0)             # loss for discriminator vs generator
+        self.last_D_G_z = D_G_z # ? save for running training diagnostics
 
         if disc: # if training discriminator, we need to optimize on real data as well
             D_x = self.discriminator(graphs)                           # prob that real data D(x) is fake
             disc_real_loss = torch.log(1 - D_x + self.eps).mean(dim=0) # loss for discriminator on real data
-            return - (disc_real_loss + adv_loss) # ! return negated, since we want to maximize this?
+            self.last_D_x = D_x # ? save for running training diagnostics
+            return - (disc_real_loss + adv_loss) # ! return negated, since we want to maximize this
         
         return adv_loss # else return just adversarial loss
 
@@ -203,8 +220,10 @@ class GraphGAN(torch.nn.Module):
 
 def train_gan(gan: GraphGAN, 
               dataloader: DataLoader,
-              n_epochs: int = 1_000,
-              disc_train_steps: int = 5,
+              n_epochs: int,
+              disc_lr: float, 
+              gen_lr: float,
+              disc_train_steps: int = 1,
               ):
     sample_adj_from_gen = lambda: to_dense_adj(gan.generator.sample(1).edge_index).squeeze()
 
@@ -212,16 +231,21 @@ def train_gan(gan: GraphGAN,
     get_shuffled_data = lambda: iter(dataloader)
 
     # define optimizers for both discriminator and generator
-    disc_optimizer = torch.optim.Adam(gan.discriminator.parameters(), lr=1e-3)
-    gen_optimizer =  torch.optim.Adam(gan.generator.parameters(),     lr=1e-3)
+    disc_optimizer = torch.optim.Adam(gan.discriminator.parameters(), lr=disc_lr)
+    gen_optimizer =  torch.optim.Adam(gan.generator.parameters(),     lr=gen_lr)
+
+    # combined_loss = torch.tensor(float('nan'))
 
     with tqdm(range(n_epochs)) as pbar:
         for epoch in pbar:
             datas = get_shuffled_data() # TODO worth it to refactor not create new iterator every time?
 
+            # data = next(datas)
+
             gan.generator.requires_grad_ = False # disable gradients for generator
             for k in range(disc_train_steps):
-                data = next(datas)
+                try: data = next(datas)
+                except Exception: datas = get_shuffled_data(); data = next(datas)
                 combined_loss = gan(data, disc = True)
                 combined_loss.backward()
                 disc_optimizer.step()
@@ -238,9 +262,9 @@ def train_gan(gan: GraphGAN,
             gen_optimizer.zero_grad()
             disc_optimizer.zero_grad()
 
-            pbar.set_description(f"Adv-loss: {adv_loss.item():.5e}, Combined-loss: {combined_loss.item():.5e}")
+            if epoch % 50 == 0: # and epoch != 0:
+                pbar.set_description(f"[@ epoch {epoch}]: E[D(G(z))]={gan.last_D_G_z.mean().item():.4f}, E[D(x)]={gan.last_D_x.mean().item():.4f}")
 
-            # if epoch % 50 == 0 and epoch != 0:
             #     plot_adj(sample_adj_from_gen())
             #     plt.savefig(f"samples/epoch_{epoch}.png")
             #     plt.clf()
@@ -250,92 +274,108 @@ def train_gan(gan: GraphGAN,
 
 if __name__ == '__main__':
     import argparse
-    # parser = argparse.ArgumentParser()
-    # parser.add_argument('mode', type=str, default='train', choices=['train', 'sample'], help='what to do when running the script (default: %(default)s)')
-    # parser.add_argument('--model', type=str, default='model.pt', help='file to save model to or load model from (default: %(default)s)')
+    parser = argparse.ArgumentParser()
+    parser.add_argument('mode', type=str, default='train', choices=['train', 'sample'], help='what to do when running the script (default: %(default)s)')
+    parser.add_argument('--model-dir', type=str, default="models", help='directory the model state dict is located in (default: %(default)s)')
+    parser.add_argument('--model-state-dict', type=str, default="GraphGAN.pt", help='file to save model state dict to or load model state dict from (default: %(default)s)')
     # parser.add_argument('--device', type=str, default='cpu', choices=['cpu', 'cuda', 'mps'], help='torch device (default: %(default)s)')
-    # parser.add_argument('--batch-size', type=int, default=16, metavar='N', help='batch size for training (default: %(default)s)')
-    # parser.add_argument('--n-epochs', type=int, default=1000, metavar='N', help='number of epochs to train (default: %(default)s)')
-    # parser.add_argument('--mp-rounds', type=int, default=5, metavar='N', help='Number of message passing rounds encoder network (default: %(default)s)')
-    # parser.add_argument('--state-dim', type=int, default=16, metavar='N', help='dimension of latent variable (default: %(default)s)')
-    # args = parser.parse_args()
+    parser.add_argument('--disc-net', type=str, default='mpnn', choices=['mpnn', 'gcn'], help='which type of GNN to use for discriminator (default: %(default)s)')
+    parser.add_argument('--mp-rounds', type=int, default=4, help='number of message passing rounds encoder network (default: %(default)s)')
+    parser.add_argument('--filter-length', type=int, default=3, help='Length of the GCN filter (default: %(default)s)')
+    parser.add_argument('--batch-size', type=int, default=16, help='batch size for training (default: %(default)s)')
+    parser.add_argument('--n-epochs', type=int, default=5_001, help='number of epochs to train (default: %(default)s)')
+    parser.add_argument('--state-dim', type=int, default=8, help='dimension of node state variables (default: %(default)s)')
+    parser.add_argument('--num-hidden-gen-mlp', type=int, default=128, help='number of hidden units for each layer of the generator\'s MLP (default: %(default)s)')
+    parser.add_argument('--gen-lr',  type=float, default=5e-5, help='learning rate for generator (default: %(default)s)')
+    parser.add_argument('--disc-lr', type=float, default=3e-5, help='learning rate for discriminator (default: %(default)s)')
+    parser.add_argument('--grad-scaling-factor',  type=float, default=1_000., help='scaling factor for the grads manually passed to generator (default: %(default)s)')
+    args = parser.parse_args()
 
-    model_dir =             "models"      # TODO: add to argparse
-    model_state_dict_path = "GraphGAN.pt" # TODO: add to argparse
+    print('\n# Options')
+    for key, value in sorted(vars(args).items()):
+        print(key, '=', value)
+    print("")
 
-    """
-    ================================================Train================================================
-    """
-    # ! hyperparams / training specific
-    disc_net =               'mpnn' # TODO: add to argparse choices=[mpnn, gcn]
-    state_dim =              8     # TODO: add to argparse
-    message_passing_rounds = 3      # TODO: add to argparse
-    filter_length =          3      # TODO: add to argparse
-    n_epochs =               5_001  # TODO: add to argparse
-    batch_size =             16     # TODO: add to argparse
+    model_dir =             args.model_dir
+    model_state_dict_path = args.model_state_dict
 
-    dataset = get_mutag_dataset()
-    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
-    node_feature_dim = 7 # const
+    if args.mode == 'train':
+        """
+        ================================================Train================================================
+        """
+        # ! hyperparams / training specific
+        disc_net =               args.disc_net
+        state_dim =              args.state_dim
+        message_passing_rounds = args.mp_rounds
+        filter_length =          args.filter_length # TODO try GCN ?
+        n_epochs =               args.n_epochs
+        batch_size =             args.batch_size
+        disc_lr =                args.disc_lr
+        gen_lr =                 args.gen_lr
+        grad_scaling_factor =    args.grad_scaling_factor
+        num_hidden =             args.num_hidden_gen_mlp
 
-
-    # create distribution of node counts over the dataset
-    ndist = NDist(dataset)
-    max_num_nodes = ndist.max_nodes
-    max_output_dim = int(max_num_nodes*(max_num_nodes-1)/2)
-
-    # create generator and discriminator
-    gen_net = MultiLayerPerceptron(state_dim=state_dim, max_output_dim=max_output_dim)
-    gen = Generator(gen_net, ndist=ndist, state_dim=state_dim)
-
-    # ! util function to sample 1 plot-ready adj matrix from the generator and dataset
-    sample_adj_from_gen = lambda: to_dense_adj(gen.sample(1).edge_index).squeeze()
-    dataloader_single = DataLoader(dataset, batch_size=1, shuffle=True) # dataloader for sampling single graphs
-    sample_real_adj = lambda: to_dense_adj(next(iter(dataloader_single)).edge_index).squeeze() # sample and convert to dense adjacency matrix
-
-    if disc_net == 'mpnn':
-        disc_net = GAN_MPNN(node_feature_dim=node_feature_dim, 
-                            state_dim=state_dim, 
-                            num_message_passing_rounds=message_passing_rounds)
-    elif disc_net == 'gcn':
-        disc_net = GraphConvNN(node_feature_dim=node_feature_dim, 
-                               filter_length=filter_length)
-    disc = Discriminator(disc_net)
-
-    fig, axs = plt.subplots(1, 3, figsize=(18, 6))
-    # plot sampled real graph
-    plot_adj(sample_real_adj(), axs[0], name="Real Graph")
-
-    # plot generated graph before training
-    plot_adj(sample_adj_from_gen(), axs[1], name="GAN before training")
-    
-    # plot_adj(sample_adj_from_gen(), name="GAN before training")
-    # plt.savefig("samples/before.png")
-    # plt.clf()
-
-    # create and train GAN
-    gan = GraphGAN(gen, disc)
-    train_gan(gan, dataloader, n_epochs=n_epochs)
-    torch.save(gan.state_dict(), f'{model_dir}/{model_state_dict_path}')
-
-    # plot generated graph after training
-    plot_adj(sample_adj_from_gen(), axs[2], name=f"GAN after training {n_epochs} epochs")
-
-    plt.savefig("samples/comparison.png")
-    # plt.show()
+        dataset = get_mutag_dataset()
+        dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
+        node_feature_dim = 7 # const
 
 
-    print("\ntraining done! Exiting.\n")
-    exit()
+        # create distribution of node counts over the dataset
+        ndist = NDist(dataset)
+        max_num_nodes = ndist.max_nodes
+        max_output_dim = int(max_num_nodes*(max_num_nodes-1)/2)
 
-    """
-    ========================================Generate and Visualize========================================
-    """
-    torch.load(f'{model_dir}/{model_state_dict_path}')
+        # create generator and discriminator
+        gen_net = MultiLayerPerceptron(state_dim=state_dim, max_output_dim=max_output_dim, num_hidden=num_hidden)
+        gen = Generator(gen_net, ndist=ndist, state_dim=state_dim)
 
-    fig, axs = plt.subplots(1, 2, figsize=(12, 6))
+        # ! util function to sample 1 plot-ready adj matrix from the generator and dataset
+        sample_adj_from_gen = lambda: to_dense_adj(gen.sample(1).edge_index).squeeze()
+        dataloader_single = DataLoader(dataset, batch_size=1, shuffle=True) # dataloader for sampling single graphs
+        sample_real_adj = lambda: to_dense_adj(next(iter(dataloader_single)).edge_index).squeeze() # sample and convert to dense adjacency matrix
 
-    # plot_adj(sample_adj(), axs[0], name="Sampled Graph")
-    # plot_adj(sample_model(baseline_model), axs[1], name="Generated Graph")
+        if disc_net == 'mpnn':
+            disc_net = GAN_MPNN(node_feature_dim=node_feature_dim, 
+                                state_dim=state_dim, 
+                                num_message_passing_rounds=message_passing_rounds)
+        elif disc_net == 'gcn':
+            disc_net = GraphConvNN(node_feature_dim=node_feature_dim, 
+                                filter_length=filter_length)
+        disc = Discriminator(disc_net)
 
-    plt.show()
+        fig, axs = plt.subplots(3, 3, figsize=(18, 18))  # Create a grid of 3x3 for 3 rows and 3 columns
+
+        # First col: real graph samples
+        for i in range(3):
+            plot_adj(sample_real_adj(), axs[i, 0], name="Real Graph")
+
+        # Second col: generated graph samples before training
+        gan = GraphGAN(gen, disc, grad_scaling_factor=grad_scaling_factor)  # Initialize GAN
+        for i in range(3):
+            plot_adj(sample_adj_from_gen(), axs[i, 1], name="GAN before training")
+
+        # Train GAN
+        train_gan(gan, dataloader, n_epochs=n_epochs, disc_lr=disc_lr, gen_lr=gen_lr)
+        torch.save(gan.state_dict(), f'{model_dir}/{model_state_dict_path}')
+
+        # Third col: generated graph samples after training
+        for i in range(3):
+            plot_adj(sample_adj_from_gen(), axs[i, 2], name=f"GAN after training {n_epochs} epochs")
+
+        plt.savefig("samples/comparison.png")  # Save the complete figure to file
+        # plt.show()
+        print("\ntraining done! Exiting.\n")
+
+
+    elif args.mode == 'sample':
+        """
+        ========================================Generate and Visualize========================================
+        """
+        torch.load(f'{model_dir}/{model_state_dict_path}')
+
+        fig, axs = plt.subplots(1, 2, figsize=(12, 6))
+
+        # plot_adj(sample_adj(), axs[0], name="Sampled Graph")
+        # plot_adj(sample_model(baseline_model), axs[1], name="Generated Graph")
+
+        plt.show()

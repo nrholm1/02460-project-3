@@ -5,6 +5,9 @@ from src.utils import get_mutag_dataset
 from torch_geometric.loader import DataLoader
 import pdb
 
+torch.set_default_dtype(torch.float64)
+torch.set_default_tensor_type(torch.DoubleTensor)
+
 class GAN_MPNN(nn.Module):
     """Simple graph neural network (message passing variant). Code from exercises week 10.
 
@@ -47,11 +50,37 @@ class GAN_MPNN(nn.Module):
         # self.output_net = torch.nn.Linear(self.state_dim, 1)
 
     def get_input_grad(self):
-        return self.last_init_state.grad # ! how to accumulate gradients from message/update nets? I.e. quite complex
+        # ! how do we accumulate gradients from message/update nets? I.e. quite complex
+        return self.last_A.grad
+        # return self.last_init_state.grad # first attempt using edge index (i.e. the forward_alt method)
         # raise NotImplementedError("Not implemented for message passing net yet!")
 
-
     def forward(self, x, edge_index, batch):
+        # create dense adjacency matrices instead of edge indices for gradient collection
+        self.last_A = to_dense_adj(edge_index, batch)
+        self.last_A.requires_grad = True
+
+        num_graphs = batch.max() + 1
+
+        # Initialize node states from features
+        state = self.input_net(x)
+        # state = x.new_zeros([batch.shape[0], self.state_dim]) # Uncomment to disable the use of node features
+        state_expanded, idx_expanded = to_dense_batch(state, batch)
+
+        for r in range(self.num_message_passing_rounds):
+            messages = self.message_net[r](state_expanded)
+            weighted_messages = torch.bmm(self.last_A, messages) # batched matmul
+            state_expanded = state_expanded + self.update_net[r](weighted_messages)
+
+        # Aggregate states for each graph
+        graph_state = x.new_zeros((num_graphs, self.state_dim))
+        state_masked = torch.cat([*state_expanded])[torch.hstack([*idx_expanded])]
+        graph_state = torch.index_add(graph_state, 0, batch, state_masked)
+        
+        return graph_state
+
+
+    def forward_alt(self, x, edge_index, batch):
         """Evaluate neural network on a batch of graphs.
 
         Args:
