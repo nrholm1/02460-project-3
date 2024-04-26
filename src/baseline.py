@@ -84,8 +84,8 @@ class Baseline(torch.nn.Module):
 
 if __name__ == '__main__':
     dataset = get_mutag_dataset()
-    dataloader = DataLoader(dataset, batch_size=1, shuffle=True) # dataloader for sampling single graphs
-    sample_adj = lambda: to_dense_adj(next(iter(dataloader)).edge_index).squeeze() # sample and convert to dense adjacency matrix
+    dataloader_single = DataLoader(dataset, batch_size=1, shuffle=True) # dataloader for sampling single graphs
+    sample_adj = lambda: to_dense_adj(next(iter(dataloader_single)).edge_index).squeeze() # sample and convert to dense adjacency matrix
     sample_model = lambda _model: to_dense_adj(_model()).squeeze()
     sample_model_directed = lambda _model: to_dense_adj(_model(undirected=False)).squeeze()
 
@@ -93,8 +93,8 @@ if __name__ == '__main__':
 
     fig, axs = plt.subplots(1, 2, figsize=(12, 6))
 
-    plot_adj(sample_adj(), axs[0], name="Sampled Graph")
-    plot_adj(sample_model(baseline_model), axs[1], name="Generated Graph")
+    plot_adj(sample_adj(), axs[0], name="Real Graph")
+    plot_adj(sample_model(baseline_model), axs[1], name="Baseline model generated Graph")
     # plot_adj(sample_model_directed(baseline_model), axs[1], name="Generated Graph")
 
     plt.show()
