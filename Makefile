@@ -7,7 +7,7 @@
 
 PROJECT_NAME = 02460_Project3
 PYTHON_VERSION = 3.10
-PYTHON_INTERPRETER = python
+PYTHON_INTERPRETER = python3
 
 #################################################################################
 # COMMANDS                                                                      #
@@ -37,6 +37,9 @@ vae-main = main.py
 gan-main = src/graphgan.py
 
 DEVICE = cpu
+
+train-vae:
+	$(PYTHON_INTERPRETER) $(vae-main) train 
 
 train-gan:
 	$(PYTHON_INTERPRETER) $(gan-main) train

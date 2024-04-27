@@ -4,6 +4,138 @@ import torch.distributions as td
 from torch_geometric.utils import to_dense_adj
 import pdb
 
+class VAE(nn.Module):
+    """
+    Define a Variational Autoencoder (VAE) model.
+    """
+    def __init__(self, prior, decoder, encoder, ndist):
+        """
+        Parameters:
+        prior: [torch.nn.Module] 
+           The prior distribution over the latent space.
+        decoder: [torch.nn.Module]
+              The decoder distribution over the data space. p(x|z)
+        encoder: [torch.nn.Module]
+                The encoder distribution over the latent space. p(z|x)
+        n_dist: NDist
+                Empirical distribution over the number of nodes.
+        """ 
+        super(VAE, self).__init__()
+        self.prior = prior
+        self.decoder = decoder
+        self.encoder = encoder
+        self.ndist = ndist 
+    
+    def calc_log_prob(self, Adj_pred, Adj, node_masks):
+        """
+        Function that calculates p(x|z) allowing for masking the calculated probabilities.
+        """
+        log_probs = Adj_pred.log_prob(Adj)
+        masked_log_probs = log_probs[node_masks == 1]
+        assert masked_log_probs.size(0) == torch.sum(node_masks), 'Number of unmasked nodes does not match the size of the masked log_probs!'
+        return masked_log_probs.sum(dim=-1)
+    
+    def permute_adjacency_matrix(self, Adj_pred, perm):
+        """
+        Permutes an Adjacency matrix ensuring that it remains symmetric.
+            Adj_pred: A tensor 
+        """
+        if Adj_pred.ndim == 3:
+            # permute rows and columns to ensure permuted logits are symmetric
+            Adj_pred = torch.index_select(Adj_pred, 1, perm)
+            logits = torch.index_select(Adj_pred, 2, perm)
+            # return as td.Bernoulli such that .log_prob method is defined
+        else:
+            # permute rows and columns to ensure permuted logits are symmetric
+            Adj_pred = torch.index_select(Adj_pred, 0, perm)
+            logits = torch.index_select(Adj_pred, 1, perm)
+
+        return td.Bernoulli(logits=logits)
+
+    def simple_reconstruction_with_perm(self, z, Adj, node_masks):
+        """
+        Calculates n_perms random permutations of the predicted adjacency matrix. 
+        Returns: The lowest reconstruction error.
+        """
+
+        Adj_pred = self.decoder(z).base_dist # predict adjacency matrix 
+        n_perms = 30
+        rec_errors = torch.empty((Adj.size(0), n_perms))
+        
+        for i in range(Adj.size(0)): # loop over number of permutations to try
+            for j in range(n_perms): # loop over batch
+                perm = torch.randperm(Adj.size(2)) # sample random permutation
+                Adj_perm = self.permute_adjacency_matrix(Adj_pred.logits[j], perm) # permute predicted A
+                rec_error = self.calc_log_prob(Adj_perm, Adj[j], node_masks[j]) # calculate reconstruction error
+                # store permutation and reconstruction error
+
+                rec_errors[i, j] = rec_error
+        
+        return torch.sum(torch.max(rec_errors, dim=1).values)
+
+    def elbo(self, x, edge_index, batch, Adj, node_masks):
+        """
+        Compute the ELBO for the given batch of data.
+
+        Parameters:
+            x:
+            edge_index:
+            batch:
+            Adj: A 3D tensor of size batch_size x max_num_nodes x max_num_nodes
+            node_masks: A 3D tensor of the same size as Adj 
+        """
+        q = self.encoder(x, edge_index, batch)
+        z = q.rsample() # reparameterization
+        
+        RE = self.simple_reconstruction_with_perm(z, Adj, node_masks)
+        # RE = self.calc_log_prob(z, Adj, node_masks) #self.decoder(z)[node_masks].log_prob(Adj[node_masks])
+        KL = q.log_prob(z) - self.prior().log_prob(z)
+
+        elbo = (RE - KL).mean()
+        """
+        Original code: 
+        elbo_old = torch.mean(self.decoder(z).log_prob(x) - td.kl_divergence(q, self.prior()), dim=0)
+        """
+        return elbo
+    
+    def forward(self, x, edge_index, batch, Adj, node_masks):
+        """
+        Compute the negative ELBO for the given batch of data.
+
+        Parameters:
+
+        """
+        return -self.elbo(x, edge_index, batch, Adj, node_masks)
+
+    def sample(self, n_samples=1):
+        """
+        Sample from the model.
+        
+        Parameters:
+        n_samples: [int]
+           Number of samples to generate.
+        """
+        samples = []
+        for i in range(n_samples):
+            n_nodes = self.ndist.sample((1,)) # sample number of nodes
+            
+            # sample full max_nodes x max_nodes A matrix
+            z = self.prior().sample(torch.Size([1]))
+            decoder_sample = self.decoder(z).sample()
+            upper = torch.triu(decoder_sample, diagonal=1)
+            Adj_sample = upper + upper.transpose(1, 2)
+            # downsample A
+            Adj_downsampled = self.mask_sample(Adj_sample, n_nodes[0])
+            # store
+            samples.append(Adj_downsampled)
+
+        return samples
+
+    def mask_sample(self, Adj_sample, n_nodes: int):
+        mask = torch.zeros_like(Adj_sample)
+        mask[:, :n_nodes, :n_nodes] = 1
+        return Adj_sample[mask == 1].view(1, n_nodes, n_nodes)
+    
 class GaussianPrior(nn.Module):
     def __init__(self, M):
         """
@@ -15,8 +147,8 @@ class GaussianPrior(nn.Module):
         """
         super(GaussianPrior, self).__init__()
         self.M = M
-        self.mean = nn.Parameter(torch.zeros(self.M), requires_grad=False)
-        self.std = nn.Parameter(torch.ones(self.M), requires_grad=False)
+        self.mean = nn.Parameter(torch.zeros(self.M, dtype=torch.float32), requires_grad=False)
+        self.std = nn.Parameter(torch.ones(self.M, dtype=torch.float32), requires_grad=False)
 
     def forward(self):
         """
@@ -83,114 +215,3 @@ class BernoulliDecoder(nn.Module):
         """
         logits = self.decoder_net(z)
         return td.Independent(td.Bernoulli(logits=logits), 2)
-
-class VAE(nn.Module):
-    """
-    Define a Variational Autoencoder (VAE) model.
-    """
-    def __init__(self, prior, decoder, encoder, k=1):
-        """
-        Parameters:
-        prior: [torch.nn.Module] 
-           The prior distribution over the latent space.
-        decoder: [torch.nn.Module]
-              The decoder distribution over the data space. p(x|z)
-        encoder: [torch.nn.Module]
-                The encoder distribution over the latent space. --> p(z|x)
-        k: [int]
-            The number of samples to use for IWAE. If set to 1, this is equivalent to using the ELBO loss.
-            Note: Reparamterization trick is used and therefore estimates will vary for the same x.
-        """ 
-        super(VAE, self).__init__()
-        self.prior = prior
-        self.decoder = decoder
-        self.encoder = encoder
-        self.k = k
-    
-    def calc_log_prob(self, Adj_pred, Adj, node_masks):
-        """
-        Function that calculates p(x|z) allowing for masking the calculated probabilities.
-        """
-        log_probs = Adj_pred.log_prob(Adj)
-        masked_log_probs = log_probs[node_masks == 1]
-        assert masked_log_probs.size(0) == torch.sum(node_masks), 'Number of unmasked nodes does not match the size of the masked log_probs!'
-        return masked_log_probs.sum(dim=-1)
-    
-    def permute_adjacency_matrix(self, Adj_pred, perm):
-        logits = Adj_pred.logits
-        # permute rows and columns to ensure permuted logits are symmetric
-        logits = torch.index_select(logits, 1, perm)
-        logits = torch.index_select(logits, 2, perm)
-        # return as td.Bernoulli such that .log_prob method is defined
-        return td.Bernoulli(logits=logits)
-    
-
-    def simple_reconstruction_with_perm(self, z, Adj, node_masks):
-        """
-        Calculates n_perms random permutations of the predicted adjacency matrix. 
-        Returns: The lowest reconstruction error.
-        """
-
-        Adj_pred = self.decoder(z).base_dist # predict adjacency matrix 
-        n_perms = 250
-        rec_errors = torch.empty((n_perms))
-        perms = []
-
-        for i in range(n_perms):
-            perm = torch.randperm(Adj.size(2)) # sample random permutation
-            Adj_perm = self.permute_adjacency_matrix(Adj_pred, perm) # permute predicted A
-            rec_error = self.calc_log_prob(Adj_perm, Adj, node_masks) # calculate reconstruction error
-            # store permutation and reconstruction error
-            perms.append(perm)
-            rec_errors[i] = rec_error
-        
-        # best_perm = perms[torch.argmax(rec_errors)]
-        
-        return torch.max(rec_errors)
-
-    def elbo(self, x, edge_index, batch, Adj, node_masks):
-        """
-        Compute the ELBO for the given batch of data.
-
-        Parameters:
-            x:
-            edge_index:
-            batch:
-            Adj: A 3D tensor of size batch_size x max_num_nodes x max_num_nodes
-            node_masks: A 3D tensor of the same size as Adj 
-        """
-        q = self.encoder(x, edge_index, batch)
-        z = q.rsample() # reparameterization
-
-        RE = self.simple_reconstruction_with_perm(z, Adj, node_masks)
-        # RE = self.calc_log_prob(z, Adj, node_masks) #self.decoder(z)[node_masks].log_prob(Adj[node_masks])
-        KL = q.log_prob(z) - self.prior().log_prob(z)
-
-        elbo = (RE - KL).mean()
-        """
-        Original code: 
-        elbo_old = torch.mean(self.decoder(z).log_prob(x) - td.kl_divergence(q, self.prior()), dim=0)
-        """
-        return elbo
-
-    def sample(self, n_samples=1):
-        """
-        Sample from the model.
-        
-        Parameters:
-        n_samples: [int]
-           Number of samples to generate.
-        """ 
-        z = self.prior().sample(torch.Size([n_samples]))
-        decoder_sample = self.decoder(z).sample()
-        upper = torch.triu(decoder_sample, diagonal=1)
-        return upper + upper.transpose(1, 2)
-
-    def forward(self, x, edge_index, batch, Adj, node_masks):
-        """
-        Compute the negative ELBO for the given batch of data.
-
-        Parameters:
-
-        """
-        return -self.elbo(x, edge_index, batch, Adj, node_masks)

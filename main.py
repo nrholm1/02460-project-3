@@ -9,6 +9,9 @@ from src.vae_trainer import get_inputs
 import pdb
 from torch_geometric.utils import to_dense_adj
 from src.graph_statistics import GraphStatistics
+from src.baseline import Baseline
+from src.graphgan import NDist
+
 
 def simple_permute_example():
     Adj_true = torch.zeros((5, 5))
@@ -31,11 +34,12 @@ def simple_permute_example():
     
     pdb.set_trace()
 
-def evaluate(model, dataloader, max_num_nodes, device):
+
+def evaluate(model, dataloader, device):
     model.eval()
 
     _x = next(iter(dataloader))
-    Adj, node_masks = get_inputs(_x.batch, _x.edge_index, max_num_nodes)
+    Adj, node_masks = get_inputs(_x.batch, _x.edge_index, model.ndist.max_nodes)
 
     data = next(iter(dataloader))
     data = data.to(device)
@@ -67,17 +71,15 @@ if __name__ == '__main__':
 
     MUTAG_dataset = get_mutag_dataset(args.device)
     
-    # Split into training and validation (same split as in exercise 10)
+    # Split into training and validation (same split as in exercise 10 except only test)
     rng = torch.Generator().manual_seed(0)
-    train_dataset, validation_dataset, test_dataset = random_split(MUTAG_dataset, (100, 44, 44), generator=rng)
+    train_dataset, test_dataset = random_split(MUTAG_dataset, (100, 88), generator=rng)
     # Create dataloader for training and validation
     train_loader = DataLoader(train_dataset, batch_size=100)
-            
-    validation_loader = DataLoader(validation_dataset, batch_size=44)
-    test_loader = DataLoader(test_dataset, batch_size=44)
+    test_loader = DataLoader(test_dataset, batch_size=88)
 
     if args.mode == 'train':
-        model = build_model(node_feature_dim, args.embedding_dim, args.n_rounds, args.latent_dim, max_num_nodes)
+        model = build_model(node_feature_dim, args.embedding_dim, args.n_rounds, args.latent_dim, MUTAG_dataset)
         optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
         
         trainer = VAETrainer(model, optimizer, train_loader, args.epochs, args.device)
@@ -85,15 +87,26 @@ if __name__ == '__main__':
     
     elif args.mode == 'eval':
         ### Evaluate negative ELBO
-        model = build_model(node_feature_dim, args.embedding_dim, args.n_rounds, args.latent_dim, max_num_nodes)
-        model.load_state_dict(torch.load('VAE_weights.pt', map_location=args.device))
-        evaluate(model, validation_loader, max_num_nodes=max_num_nodes, device=args.device)
+        model = build_model(node_feature_dim, args.embedding_dim, args.n_rounds, args.latent_dim, MUTAG_dataset)
+        # model.load_state_dict(torch.load('VAE_weights.pt', map_location=args.device))
+        
+        evaluate(model, test_loader, device=args.device)
 
+        ### Evaluate uniqueness and novelty
+        N_samples_novelty = 1000
+        num_nodes_distribution = NDist(MUTAG_dataset)
 
-        ### Evaluate uniqueness
-        model = build_model(node_feature_dim, args.embedding_dim, args.n_rounds, args.latent_dim, max_num_nodes)
-        model.load_state_dict(torch.load('VAE_weights.pt', map_location=args.device))
-        samples = model.sample(1000)
+        
+        # model = build_model(node_feature_dim, args.embedding_dim, args.n_rounds, args.latent_dim, max_num_nodes)
+        # model.load_state_dict(torch.load('VAE_weights.pt', map_location=args.device))
+        
+        VAE_samples = model.sample(N_samples_novelty)
+        pdb.set_trace()
+        
+        sample_model = lambda _model: to_dense_adj(_model()).squeeze()
+        baseline_model = Baseline(test_dataset)
+        baseline_samples = [sample_model(baseline_model) for _ in range(N_samples_novelty)]
+        
 
     elif args.mode == 'sample':
         model = build_model(node_feature_dim, args.embedding_dim, args.n_rounds, args.latent_dim, max_num_nodes)

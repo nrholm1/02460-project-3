@@ -11,10 +11,11 @@ import numpy as np
 import pdb
 
 from src.graph_statistics import GraphStatistics
-from src.graphgan import get_gan_model
+from src.graphgan import get_gan_model, NDist
 from graph_statistics_nx_sanity import convert_geometric_to_network_x
 from src.baseline import Baseline
 from src.utils import get_mutag_dataset, plot_adj
+from src.GraphVAE.graphvae import build_model
 
 
 
@@ -65,12 +66,17 @@ class SampleGenerator:
                 self.save_sample(sample, save_path)
 
         return samples
+    
+    def make_vae_samples(self, vae_model, num_samples: int, save_folder: str = 'samples/vae'):
+        samples = vae_model.samples(num_samples)
+        for i, Adj in enumerate(samples):
+            self.save_sample(Adj, f"{save_folder}/sample_{i}.pt")
+        return samples
 
     def save_sample(self, adj, path):
         # create folder if it does not exist
         os.makedirs(os.path.dirname(path), exist_ok=True)
         torch.save(adj, path)
-
 
 def make_histograms(dataset, sample_folders, plot_colors, save_path="samples/histograms.pdf"):
 
@@ -142,7 +148,11 @@ def make_histograms(dataset, sample_folders, plot_colors, save_path="samples/his
 
 if __name__ == "__main__":
     gan_model_path = "models/GraphGAN.pt"
-    sample_folders = {"dataset": None, "baseline": "samples/baseline/", "gan": "samples/gan/"}
+    vae_model_path = "models/VAE_weights.pt"
+    sample_folders = {"dataset": None, 
+                      "baseline": "samples/baseline/", 
+                      "gan": "samples/gan/",
+                      "vae": "samples/vae"}
     plot_colors = {"dataset": "lightgreen", "baseline": "skyblue", "gan": "lightcoral"}
 
 
@@ -154,9 +164,13 @@ if __name__ == "__main__":
     state_dict = torch.load(gan_model_path)
     gan_model.load_state_dict(state_dict)
 
+    ndist = NDist(dataset)
+    vae_model = build_model(node_feature_dim=7, embedding_dim=16, n_message_passing_rounds=25, NDist_dataset=dataset)
+    vae_model.load_state_dict(torch.load('VAE_weights.pt', map_location='cpu'))
+
     sample_generator.make_baseline_samples(baseline_model, 1000, sample_folders["baseline"])
     sample_generator.make_gan_samples(gan_model, 1000, sample_folders["gan"])
-
+    sample_generator.make_vae_samples(vae_model, 1000, sample_folders["gan"])
 
     make_histograms(dataset, sample_folders, plot_colors)
     

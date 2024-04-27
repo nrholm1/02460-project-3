@@ -1,6 +1,5 @@
 import torch
 import torch.nn as nn
-
 class GNNEncoderNetwork(nn.Module):
     def __init__(self, node_feature_dim: int, embedding_dim: int, n_message_passing_rounds: int, M: int) -> None:
         """
@@ -53,7 +52,6 @@ class GNNEncoderNetwork(nn.Module):
         # Extract number of nodes and graphs
         num_graphs = batch.max()+1
         num_nodes = batch.shape[0]
-
         # Initialize node state from node features
         state = self.embedding_network(x)
 
@@ -68,7 +66,7 @@ class GNNEncoderNetwork(nn.Module):
             
             # Update states
             state = state + self.update_net[r](aggregated) # skip connection
-
+        
         # Aggretate: Sum node features
         graph_state = x.new_zeros((num_graphs, self.embedding_dim))
         graph_state = torch.index_add(graph_state, 0, batch, state)
@@ -99,28 +97,28 @@ class GRUGNNEncoderNetwork(torch.nn.Module):
 
         # Input network
         self.input_net = torch.nn.Sequential(
-            torch.nn.Linear(self.node_feature_dim, self.embedding_dim),
+            torch.nn.Linear(self.node_feature_dim, self.embedding_dim, dtype=torch.float32),
             torch.nn.ReLU()
             )
         
         # Message networks
         self.message_net = torch.nn.ModuleList([
             torch.nn.Sequential(
-                torch.nn.Linear(self.embedding_dim, self.embedding_dim),
+                torch.nn.Linear(self.embedding_dim, self.embedding_dim, dtype=torch.float32),
                 torch.nn.ReLU()
             ) for _ in range(num_message_passing_rounds)])
     
         # GRU update network
-        self.W_mr = torch.nn.Linear(self.embedding_dim, self.embedding_dim, bias=False)
-        self.W_mz = torch.nn.Linear(self.embedding_dim, self.embedding_dim, bias=False)
-        self.W_mh = torch.nn.Linear(self.embedding_dim, self.embedding_dim, bias=False)
+        self.W_mr = torch.nn.Linear(self.embedding_dim, self.embedding_dim, bias=False, dtype=torch.float32)
+        self.W_mz = torch.nn.Linear(self.embedding_dim, self.embedding_dim, bias=False, dtype=torch.float32)
+        self.W_mh = torch.nn.Linear(self.embedding_dim, self.embedding_dim, bias=False, dtype=torch.float32)
 
-        self.W_hr = torch.nn.Linear(self.embedding_dim, self.embedding_dim)
-        self.W_hz = torch.nn.Linear(self.embedding_dim, self.embedding_dim)
-        self.W_hh = torch.nn.Linear(self.embedding_dim, self.embedding_dim)
+        self.W_hr = torch.nn.Linear(self.embedding_dim, self.embedding_dim, dtype=torch.float32)
+        self.W_hz = torch.nn.Linear(self.embedding_dim, self.embedding_dim, dtype=torch.float32)
+        self.W_hh = torch.nn.Linear(self.embedding_dim, self.embedding_dim, dtype=torch.float32)
 
         # State output network
-        self.output_net = torch.nn.Linear(self.embedding_dim, self.M)
+        self.output_net = torch.nn.Linear(self.embedding_dim, self.M, dtype=torch.float32)
     
     def reset(self, message, h):
         return self.sigmoid(self.W_mr(message) + self.W_hr(h))
@@ -136,7 +134,7 @@ class GRUGNNEncoderNetwork(torch.nn.Module):
         z = self.update(message, h_u)
         h = self.candidate(message, h_u, r)
         return z * h + (1 - z) * h_u
-
+    
     def forward(self, x, edge_index, batch):
         """Evaluate neural network on a batch of graphs.
 
@@ -181,5 +179,6 @@ class GRUGNNEncoderNetwork(torch.nn.Module):
         graph_state = torch.index_add(graph_state, 0, batch, state)
 
         # Output
+        
         out = self.output_net(graph_state)
         return out
