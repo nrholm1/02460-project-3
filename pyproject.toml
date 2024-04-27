@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "02460_Project3"
 version = "0.0.1"
 authors = [
-  { name="Andreas Fiehn", email="s204124@dtu.dk" },
+  { name="Andreas Fiehn", email="s204125@dtu.dk" },
   { name="Niels Raunkjær Holm", email="s204503@dtu.dk"},
   { name="Michael Harborg", email="s204138@dtu.dk" },
   { name="Oliver Elmgreen", email="s204070@dtu.dk"}

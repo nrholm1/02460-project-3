@@ -1,20 +1,30 @@
 import torch
 import pdb
+from functools import cached_property
+
 class GraphStatistics:
     def __init__(self, A: torch.tensor) -> None:
         self.A = A
         assert A.shape[0] == A.shape[1], 'The inputted adjacency matrix is not symmetric'
     
-    @property
+    @cached_property
     def degree(self):
         return torch.diag(self.A @ self.A)
     
-    @property
+    @cached_property
+    def avg_degree(self):
+        return torch.mean(self.degree)
+
+    @cached_property
     def eigenvector_centrality(self):
         e_vals, e_vecs = torch.linalg.eigh(self.A)
-        return e_vecs[:, torch.argmax(e_vals)]
+        return abs(e_vecs[:, torch.argmax(e_vals)])
+    
+    @cached_property
+    def avg_eigenvector_centrality(self):
+        return torch.mean(self.eigenvector_centrality)
 
-    @property
+    @cached_property
     def clustercoefficient(self):
         I = torch.eye(self.A.size(1))
         D = self.degree * I
@@ -23,8 +33,11 @@ class GraphStatistics:
         inverse_term = 1/torch.diag(D @ (D-I))
         inverse_term[inverse_term == torch.inf] = 0. # handles zero-division
         cc = (inverse_term * I) @ torch.diag(A_cubed)
-        pdb.set_trace()
         return cc
+    
+    @cached_property
+    def avg_clustercoefficient(self):
+        return torch.mean(self.clustercoefficient)
     
 def graph_statistics_example():
     """

@@ -43,3 +43,6 @@ train-gan:
 
 sample-gan:
 	$(PYTHON_INTERPRETER) $(gan-main) sample
+
+histograms:
+	$(PYTHON_INTERPRETER) src/evaluate_samples.py

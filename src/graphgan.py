@@ -7,6 +7,7 @@ import torch.distributions as td
 from torch_geometric.loader import DataLoader
 from torch_geometric.data import Batch
 from torch_geometric.utils import to_dense_adj, to_dense_batch
+import os
 
 from src.utils import get_mutag_dataset, plot_adj
 from src.gnn import GAN_MPNN, GraphConvNN
@@ -71,6 +72,7 @@ class Generator(torch.nn.Module):
         self.gnn = gnn
         self.ndist = ndist
         self.state_dim = state_dim
+        self.max_num_nodes = ndist.max_nodes
         self.sigmoid = torch.nn.Sigmoid()
         _loc, _scale = torch.zeros((self.state_dim,1)), torch.ones((self.state_dim,1)) # ? row or column vecs?
         self.seed_dist = td.Independent(td.Normal(loc=_loc,scale=_scale), 1)
@@ -135,7 +137,7 @@ class Generator(torch.nn.Module):
 
     @cached_property
     def triu_idx(self):
-        return torch.triu_indices(max_num_nodes,max_num_nodes,1)
+        return torch.triu_indices(self.max_num_nodes,self.max_num_nodes,1)
     
     def static_x(self, num_nodes: int):
         return torch.ones((num_nodes,7))
@@ -274,6 +276,31 @@ def train_gan(gan: GraphGAN,
                 plt.clf()
 
 
+def get_gan_model(dataset, node_feature_dim=7, state_dim=8, 
+                  num_hidden=128, message_passing_rounds=4, filter_length=3, 
+                  disc_net='mpnn', grad_scaling_factor=1_000.):
+    # create distribution of node counts over the dataset
+    ndist = NDist(dataset)
+    max_num_nodes = ndist.max_nodes
+    max_output_dim = int(max_num_nodes*(max_num_nodes-1)/2)
+
+    # create generator and discriminator
+    gen_net = MultiLayerPerceptron(state_dim=state_dim, max_output_dim=max_output_dim, num_hidden=num_hidden)
+    gen = Generator(gen_net, ndist=ndist, state_dim=state_dim)
+
+    if disc_net == 'mpnn':
+        disc_net = GAN_MPNN(node_feature_dim=node_feature_dim, 
+                            state_dim=state_dim, 
+                            num_message_passing_rounds=message_passing_rounds)
+    elif disc_net == 'gcn':
+        disc_net = GraphConvNN(node_feature_dim=node_feature_dim, 
+                            filter_length=filter_length)
+    disc = Discriminator(disc_net)
+
+    # Second col: generated graph samples before training
+    gan = GraphGAN(gen, disc, grad_scaling_factor=grad_scaling_factor)  # Initialize GAN
+
+    return gan
 
 
 if __name__ == '__main__':
@@ -325,6 +352,11 @@ if __name__ == '__main__':
         dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
         node_feature_dim = 7 # const
 
+        gan = get_gan_model(dataset, node_feature_dim=node_feature_dim, state_dim=state_dim,
+                            num_hidden=num_hidden_units, message_passing_rounds=message_passing_rounds,
+                            disc_net=disc_net, grad_scaling_factor=grad_scaling_factor)
+        
+        gen = gan.generator
 
         # create distribution of node counts over the dataset
         ndist = NDist(dataset)
@@ -365,6 +397,8 @@ if __name__ == '__main__':
 
         # Train GAN
         train_gan(gan, dataloader, n_epochs=n_epochs, disc_lr=disc_lr, gen_lr=gen_lr)
+        # create folder if it does not exist
+        os.makedirs(os.path.dirname(f'{model_dir}/{model_state_dict_path}'), exist_ok=True)
         torch.save(gan.state_dict(), f'{model_dir}/{model_state_dict_path}')
 
         # Third col: generated graph samples after training
