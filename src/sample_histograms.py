@@ -11,7 +11,7 @@ import numpy as np
 import pdb
 
 from src.graph_statistics import GraphStatistics
-from src.graphgan import get_gan_model
+from src.graphgan import create_gan_model
 from graph_statistics_nx_sanity import convert_geometric_to_network_x
 from src.baseline import Baseline
 from src.utils import get_mutag_dataset, plot_adj
@@ -150,7 +150,7 @@ if __name__ == "__main__":
     sample_generator = SampleGenerator(dataset)
     baseline_model = Baseline(sample_generator.dataset)
 
-    gan_model = get_gan_model(dataset) # get the GAN model with all default parameters
+    gan_model = create_gan_model(dataset) # get the GAN model with all default parameters
     state_dict = torch.load(gan_model_path)
     gan_model.load_state_dict(state_dict)
 

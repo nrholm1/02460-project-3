@@ -276,7 +276,7 @@ def train_gan(gan: GraphGAN,
                 plt.clf()
 
 
-def get_gan_model(dataset, node_feature_dim=7, state_dim=8, 
+def create_gan_model(dataset, node_feature_dim=7, state_dim=8, 
                   num_hidden=128, message_passing_rounds=4, filter_length=3, 
                   disc_net='mpnn', grad_scaling_factor=1_000.):
     # create distribution of node counts over the dataset
@@ -352,7 +352,7 @@ if __name__ == '__main__':
         dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
         node_feature_dim = 7 # const
 
-        gan = get_gan_model(dataset, node_feature_dim=node_feature_dim, state_dim=state_dim,
+        gan = create_gan_model(dataset, node_feature_dim=node_feature_dim, state_dim=state_dim,
                             num_hidden=num_hidden_units, message_passing_rounds=message_passing_rounds,
                             disc_net=disc_net, grad_scaling_factor=grad_scaling_factor)
         
