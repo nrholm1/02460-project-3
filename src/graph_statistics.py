@@ -26,13 +26,16 @@ class GraphStatistics:
 
     @cached_property
     def clustercoefficient(self):
-        I = torch.eye(self.A.size(1))
+        I = torch.eye(self.A.size(1), dtype=self.A.dtype)
         D = self.degree * I
         A_cubed = self.A @ self.A @ self.A
         
         inverse_term = 1/torch.diag(D @ (D-I))
         inverse_term[inverse_term == torch.inf] = 0. # handles zero-division
-        cc = (inverse_term * I) @ torch.diag(A_cubed)
+        try:
+            cc = (inverse_term * I) @ torch.diag(A_cubed)
+        except Exception as e:
+            pdb.set_trace()
         return cc
     
     @cached_property

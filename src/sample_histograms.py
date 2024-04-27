@@ -68,7 +68,11 @@ class SampleGenerator:
         return samples
     
     def make_vae_samples(self, vae_model, num_samples: int, save_folder: str = 'samples/vae'):
-        samples = vae_model.samples(num_samples)
+        print("VAE!! ", save_folder)
+        if not os.path.exists(save_folder):
+            os.makedirs(save_folder)
+        
+        samples = vae_model.sample(num_samples)
         for i, Adj in enumerate(samples):
             self.save_sample(Adj, f"{save_folder}/sample_{i}.pt")
         return samples
@@ -153,7 +157,7 @@ if __name__ == "__main__":
                       "baseline": "samples/baseline/", 
                       "gan": "samples/gan/",
                       "vae": "samples/vae"}
-    plot_colors = {"dataset": "lightgreen", "baseline": "skyblue", "gan": "lightcoral"}
+    plot_colors = {"dataset": "lightgreen", "baseline": "skyblue", "gan": "lightcoral", "vae": "yellow"}
 
 
     dataset = get_mutag_dataset()
@@ -165,12 +169,13 @@ if __name__ == "__main__":
     gan_model.load_state_dict(state_dict)
 
     ndist = NDist(dataset)
-    vae_model = build_model(node_feature_dim=7, embedding_dim=16, n_message_passing_rounds=25, NDist_dataset=dataset)
-    vae_model.load_state_dict(torch.load('VAE_weights.pt', map_location='cpu'))
-
+    vae_model = build_model(node_feature_dim=7, embedding_dim=16, M=16,
+                            n_message_passing_rounds=25, NDist_dataset=dataset)
+    vae_model.load_state_dict(torch.load('models/VAE_weights.pt', map_location='cpu'))
+    pdb.set_trace()
     sample_generator.make_baseline_samples(baseline_model, 1000, sample_folders["baseline"])
     sample_generator.make_gan_samples(gan_model, 1000, sample_folders["gan"])
-    sample_generator.make_vae_samples(vae_model, 1000, sample_folders["gan"])
+    sample_generator.make_vae_samples(vae_model, 1000, sample_folders["vae"])
 
     make_histograms(dataset, sample_folders, plot_colors)
     

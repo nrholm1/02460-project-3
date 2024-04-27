@@ -134,7 +134,7 @@ class VAE(nn.Module):
     def mask_sample(self, Adj_sample, n_nodes: int):
         mask = torch.zeros_like(Adj_sample)
         mask[:, :n_nodes, :n_nodes] = 1
-        return Adj_sample[mask == 1].view(1, n_nodes, n_nodes)
+        return Adj_sample[mask == 1].view(n_nodes, n_nodes)
     
 class GaussianPrior(nn.Module):
     def __init__(self, M):

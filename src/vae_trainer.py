@@ -70,6 +70,6 @@ class VAETrainer:
 
                 if (step+1) % len(self.data_loader) == 0:
                     epoch += 1
-        torch.save(self.model.state_dict(), 'VAE_weights.pt')
+        torch.save(self.model.state_dict(), 'models/VAE_weights.pt')
 
         
