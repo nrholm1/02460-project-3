@@ -7,6 +7,7 @@ import torch.distributions as td
 from torch_geometric.loader import DataLoader
 from torch_geometric.data import Batch
 from torch_geometric.utils import to_dense_adj, to_dense_batch
+import os
 
 from src.utils import get_mutag_dataset, plot_adj
 from src.gnn import GAN_MPNN, GraphConvNN
@@ -356,6 +357,8 @@ if __name__ == '__main__':
 
         # Train GAN
         train_gan(gan, dataloader, n_epochs=n_epochs, disc_lr=disc_lr, gen_lr=gen_lr)
+        # create folder if it does not exist
+        os.makedirs(os.path.dirname(f'{model_dir}/{model_state_dict_path}'), exist_ok=True)
         torch.save(gan.state_dict(), f'{model_dir}/{model_state_dict_path}')
 
         # Third col: generated graph samples after training
