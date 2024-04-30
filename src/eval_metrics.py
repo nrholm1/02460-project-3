@@ -1,7 +1,7 @@
 #%%
 import torch
 from torch_geometric.utils import to_dense_adj
-from networkx import weisfeiler_lehman_graph_hash, from_numpy_array as nx_from_numpy_array
+from networkx import connected_components, weisfeiler_lehman_graph_hash, from_numpy_array as nx_from_numpy_array, to_numpy_array
 
 def adj_tensor_to_nx_graph(adj: torch.Tensor):
     adj = adj.detach().numpy() # detach (if for any reason there is a grad)
@@ -20,11 +20,17 @@ def isomorphic(g1: torch.Tensor, g2: torch.Tensor) -> bool:
 
     G1 = adj_tensor_to_nx_graph(g1)
     G2 = adj_tensor_to_nx_graph(g2)
+    
+    # Extract the largest connected component
+    G1_lcc = max(connected_components(G1), key=len, default=set())
+    G2_lcc = max(connected_components(G2), key=len, default=set())
+    G1_lcc = G1.subgraph(G1_lcc).copy()
+    G2_lcc = G2.subgraph(G2_lcc).copy()
 
     # compute graph hashes, which are identical between two graphs iff they are isomorphic
     # ? Note: in theory you could have hash collisions, but probability is negligible
-    gh1 = weisfeiler_lehman_graph_hash(G1)
-    gh2 = weisfeiler_lehman_graph_hash(G2)
+    gh1 = weisfeiler_lehman_graph_hash(G1_lcc)
+    gh2 = weisfeiler_lehman_graph_hash(G2_lcc)
     return gh1 == gh2
 
 
@@ -67,14 +73,22 @@ if __name__ == '__main__':
     import matplotlib.pyplot as plt
     from src.utils import plot_adj
 
-    adj1 = torch.tensor([
-        [1,0],
-        [1,1],
-    ])
-    adj2 = torch.tensor([
-        [1,1],
-        [0,1],
-    ])
+    # adj1 = torch.tensor([
+    #     [1,0],
+    #     [1,1],
+    # ])
+    # adj2 = torch.tensor([
+    #     [1,1],
+    #     [0,1],
+    # ])
+
+    block = torch.ones(2,2)
+    block_diag = torch.block_diag(block, block)
+    
+    adj1 = block_diag
+    adj1[0,-1] = 1
+    adj1[-1,0] = 1
+    adj2 = block_diag
 
     are_isomorphic = isomorphic(adj1,adj2)
 
