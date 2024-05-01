@@ -271,6 +271,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--sample", action="store_true")
     parser.add_argument("--histogram", action="store_true")
+    parser.add_argument("--table", action="store_true")
     parser.add_argument("--num-samples", type=int, default=1000)
     parser.add_argument("--gan-model-path", type=str, default=None)
     parser.add_argument("--gan-statedim", type=int, default=10)
@@ -282,6 +283,12 @@ if __name__ == "__main__":
 
     
     args = parser.parse_args()
+
+    # print args nicely
+    print("Arguments:")
+    for arg in vars(args):
+        print(f"  {arg}: {getattr(args, arg)}")
+
     dataset = get_mutag_dataset()
     sample_generator = SampleGenerator(dataset)
     baseline_model = Baseline(sample_generator.dataset)
@@ -317,5 +324,19 @@ if __name__ == "__main__":
     if args.histogram:
         make_histograms_rows(dataset, sample_folders, plot_colors, save_path="samples/histograms_rows.pdf")
 
-    
+    if args.table:
+        from src.eval_metrics import compute_graph_hashes, eval_novelty, eval_unique
+
+        dataset_hashes = compute_graph_hashes([to_dense_adj(data.edge_index).squeeze() for data in dataset], return_list=True)
+        # make a list of the dataset and add half of the dataset to the list
+
+        for label, sample_folder in sample_folders.items():
+            if label.lower() != "dataset":
+                samples = [torch.load(os.path.join(sample_folder, f)) for f in os.listdir(sample_folder)]
+
+                gen_graph_hashes = compute_graph_hashes(samples, return_list=True)
+                novelty = eval_novelty(gen_graph_hashes, dataset_hashes)
+                uniqueness = eval_unique(gen_graph_hashes)
+                print(f"Novelty for {label}: {novelty}")
+                print(f"Uniqueness for {label}: {uniqueness}")
 
