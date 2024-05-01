@@ -400,6 +400,27 @@ def train_gan(gan: GraphGAN,
                 plt.close('all') # ? clean up
 
 
+def create_gan_model(dataset, 
+                     mp_rounds = 5,
+                     state_dim = 10):
+        # create distribution of node counts over the dataset
+        ndist = NDist(dataset)
+
+        # create generator
+        gen_net = GraphRNN(state_dim=state_dim, edge_input_size=node_feature_dim*2+state_dim) # ! this version using GraphRNN
+        gen = Generator(gen_net, ndist=ndist, state_dim=state_dim)
+
+        # create discriminator
+        disc_net = GAN_MPNN(node_feature_dim=node_feature_dim, 
+                            state_dim=state_dim, 
+                            num_message_passing_rounds=mp_rounds)
+        disc = Discriminator(disc_net)
+
+        # Initialize GAN
+        gan = GraphGAN(gen, disc)
+
+        return gan
+
 
 if __name__ == '__main__':
     import argparse
@@ -464,11 +485,6 @@ if __name__ == '__main__':
         gen_net = GraphRNN(state_dim=state_dim, edge_input_size=node_feature_dim*2+state_dim) # ! this version using GraphRNN
         gen = Generator(gen_net, ndist=ndist, state_dim=state_dim)
 
-        # ! util function to sample 1 plot-ready adj matrix from the generator and dataset
-        sample_adj_from_gen = lambda: to_dense_adj(gen.sample(1).edge_index).squeeze()
-        dataloader_single = DataLoader(dataset, batch_size=1, shuffle=True) # dataloader for sampling single graphs
-        sample_real_adj = lambda: to_dense_adj(next(iter(dataloader_single)).edge_index).squeeze() # sample and convert to dense adjacency matrix
-
         if disc_net == 'mpnn':
             disc_net = GAN_MPNN(node_feature_dim=node_feature_dim, 
                                 state_dim=state_dim, 
@@ -481,30 +497,17 @@ if __name__ == '__main__':
         # Initialize GAN
         gan = GraphGAN(gen, disc)
 
-        # fig, axs = plt.subplots(3, 3, figsize=(18, 18))  # Create a grid of 3x3 for 3 rows and 3 columns
-        # # First col: real graph samples
-        # for i in range(3):
-        #     plot_adj(sample_real_adj(), axs[i, 0], name="Real Graph")
-        # # Second col: generated graph samples before training
-        # for i in range(3):
-        #     plot_adj(sample_adj_from_gen(), axs[i, 1], name="GAN before training")
-
         # Train GAN
         train_gan(gan, dataloader, n_epochs=n_epochs, 
                   disc_lr=disc_lr, 
                   gen_lr=gen_lr, 
                   disc_train_steps=disc_train_steps,
                   gen_train_steps=gen_train_steps)
+        
         # create folder if it does not exist
         os.makedirs(os.path.dirname(f'{model_dir}/{model_state_dict_path}'), exist_ok=True)
         torch.save(gan.state_dict(), f'{model_dir}/{model_state_dict_path}')
 
-        # Third col: generated graph samples after training
-        # for i in range(3):
-        #     plot_adj(sample_adj_from_gen(), axs[i, 2], name=f"GAN after training {n_epochs} epochs")
-
-        plt.savefig("samples/comparison.png")  # Save the complete figure to file
-        # plt.show()
         print("\ntraining done! Exiting.\n")
 
 
