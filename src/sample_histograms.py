@@ -151,7 +151,8 @@ def make_histograms(dataset, sample_folders, plot_colors, save_path="samples/his
 
 def make_histograms_rows(dataset, sample_folders, plot_colors, save_path="samples/histograms.pdf"):
     # make histogram of four rows and three columns
-    fig, axs = plt.subplots(4, 3, figsize=(6, 5))
+    n_rows = len(sample_folders)
+    fig, axs = plt.subplots(n_rows, 3, figsize=(6, 5))
 
 
     global_min_degree = float('inf')
@@ -265,24 +266,56 @@ if __name__ == "__main__":
     plot_colors = {"dataset": "lightgreen", "baseline": "skyblue", "gan": "lightcoral", "vae": "yellow"}
 
 
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--sample", action="store_true")
+    parser.add_argument("--histogram", action="store_true")
+    parser.add_argument("--num-samples", type=int, default=1000)
+    parser.add_argument("--gan-model-path", type=str, default=None)
+    parser.add_argument("--gan-statedim", type=int, default=10)
+    parser.add_argument("--gan-mp-rounds", type=int, default=5)
+    parser.add_argument("--vae-model-path", type=str, default=None)
+    parser.add_argument("--vae-embedding-dim", type=int, default=16)
+    parser.add_argument("--vae-M", type=int, default=16)
+    parser.add_argument("--vae-n-message-passing-rounds", type=int, default=25)
+
+    
+    args = parser.parse_args()
     dataset = get_mutag_dataset()
     sample_generator = SampleGenerator(dataset)
     baseline_model = Baseline(sample_generator.dataset)
 
-    gan_model = create_gan_model(dataset) # get the GAN model with all default parameters
-    state_dict = torch.load(gan_model_path)
-    gan_model.load_state_dict(state_dict)
+    if args.gan_model_path:
+        gan_model = create_gan_model(dataset, mp_rounds=args.gan_mp_rounds, state_dim=args.gan_statedim)
+        state_dict = torch.load(args.gan_model_path)
+        gan_model.load_state_dict(state_dict)
 
-    ndist = NDist(dataset)
-    vae_model = build_model(node_feature_dim=7, embedding_dim=16, M=16,
-                            n_message_passing_rounds=25, NDist_dataset=dataset)
-    vae_model.load_state_dict(torch.load('models/VAE_weights.pt', map_location='cpu'))
-    # pdb.set_trace()
-    # sample_generator.make_baseline_samples(baseline_model, 1000, sample_folders["baseline"])
-    # sample_generator.make_gan_samples(gan_model, 1000, sample_folders["gan"])
-    # sample_generator.make_vae_samples(vae_model, 1000, sample_folders["vae"])
+    if args.vae_model_path:
+        ndist = NDist(dataset)
+        vae_model = build_model(node_feature_dim=7, embedding_dim=args.vae_embedding_dim, M=args.vae_M,
+                                n_message_passing_rounds=args.vae_n_message_passing_rounds, NDist_dataset=dataset)
+        vae_model.load_state_dict(torch.load(args.vae_model_path, map_location="cpu"))
+
+    if args.sample:
+        sample_generator.make_baseline_samples(baseline_model, args.num_samples, sample_folders["baseline"])
+        if args.gan_model_path:
+            sample_generator.make_gan_samples(gan_model, args.num_samples, sample_folders["gan"])
+        if args.vae_model_path:
+            sample_generator.make_vae_samples(vae_model, args.num_samples, sample_folders["vae"])
+   
+    # remove vae from the sample_folders if the model is not loaded
+    if not args.vae_model_path:
+        sample_folders.pop("vae")
+        plot_colors.pop("vae")
+    # remove gan from the sample_folders if the model is not loaded
+    if not args.gan_model_path:
+        sample_folders.pop("gan")
+        plot_colors.pop("gan")
 
     # make_histograms(dataset, sample_folders, plot_colors)
-    make_histograms_rows(dataset, sample_folders, plot_colors, save_path="samples/histograms_rows.pdf")
+    if args.histogram:
+        make_histograms_rows(dataset, sample_folders, plot_colors, save_path="samples/histograms_rows.pdf")
+
     
 

@@ -54,5 +54,26 @@ train-gan:
 sample-gan:
 	$(PYTHON_INTERPRETER) $(gan-main) sample
 
-histograms:
-	$(PYTHON_INTERPRETER) src/sample_histograms.py
+
+
+    # parser.add_argument("--dataset", type=str, default="mutag")
+    # parser.add_argument("--sample", type=bool, default=True)
+    # parser.add_argument("--num-samples", type=int, default=1000)
+    # parser.add_argument("--gan-model-path", type=str, default=None)
+    # parser.add_argument("--gan-statedim", type=int, default=10)
+    # parser.add_argument("--gan-mp-rounds", type=int, default=5)
+    # parser.add_argument("--vae-model-path", type=str, default=None)
+    # parser.add_argument("--vae-embedding-dim", type=int, default=16)
+    # parser.add_argument("--vae-M", type=int, default=16)
+    # parser.add_argument("--vae-n-message-passing-rounds", type=int, default=25)
+
+VAE_MODEL_PATH = models/VAE_weights.pt
+GAN_MODEL_PATH = models/ep1500_GraphGAN.pt
+
+results-sample: 
+	$(PYTHON_INTERPRETER) src/sample_histograms.py --sample --vae-model-path $(VAE_MODEL_PATH) \
+	 --gan-model-path $(GAN_MODEL_PATH) --num-samples 1000
+
+results-histogram:
+	$(PYTHON_INTERPRETER) src/sample_histograms.py --histogram --vae-model-path $(VAE_MODEL_PATH) \
+	 --gan-model-path $(GAN_MODEL_PATH)
