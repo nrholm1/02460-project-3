@@ -57,9 +57,9 @@ if __name__ == '__main__':
     parser.add_argument('--device', type=str, default='cpu', choices=['cpu', 'cuda', 'mps'], help='torch device (default: %(default)s)')
     parser.add_argument('--batch-size', type=int, default=32, metavar='N', help='batch size for training (default: %(default)s)')
     parser.add_argument('--epochs', type=int, default=1000, metavar='N', help='number of epochs to train (default: %(default)s)')
-    parser.add_argument('--n-rounds', type=int, default=25, metavar='N', help='Number of message passing rounds encoder network (default: %(default)s)')
-    parser.add_argument('--embedding-dim', type=int, default=16, metavar='N', help='embedding dimension of encoder network (default: %(default)s)')
-    parser.add_argument('--latent-dim', type=int, default=16, metavar='N', help='dimension of latent variable (default: %(default)s)')
+    parser.add_argument('--n-rounds', type=int, default=5, metavar='N', help='Number of message passing rounds encoder network (default: %(default)s)')
+    parser.add_argument('--embedding-dim', type=int, default=8, metavar='N', help='embedding dimension of encoder network (default: %(default)s)')
+    parser.add_argument('--latent-dim', type=int, default=2, metavar='N', help='dimension of latent variable (default: %(default)s)')
     parser.add_argument('--prior', type=str, default='Standard_Normal', choices=['Standard_Normal', 'MoG', 'Flow', 'Vamp'], help='Type of prior distribution over latents e.g. p(z)')
     parser.add_argument('--k', type=int, default=1, help='The sample size when using IWAE loss (default: %(default)s)')
     args = parser.parse_args()
@@ -99,17 +99,22 @@ if __name__ == '__main__':
         
         # model = build_model(node_feature_dim, args.embedding_dim, args.n_rounds, args.latent_dim, max_num_nodes)
         # model.load_state_dict(torch.load('VAE_weights.pt', map_location=args.device))
+        import matplotlib.pyplot as plt
+        VAE_samples, VAE_mean_logits = model.sample(N_samples_novelty)
+        mu_Adj = VAE_mean_logits.detach().view(28,28,1).numpy()
         
-        VAE_samples = model.sample(N_samples_novelty)
-        pdb.set_trace()
+        plt.imshow(mu_Adj)
+        plt.show()
         
         sample_model = lambda _model: to_dense_adj(_model()).squeeze()
         baseline_model = Baseline(test_dataset)
         baseline_samples = [sample_model(baseline_model) for _ in range(N_samples_novelty)]
-        
+        import matplotlib.pyplot as plt
+
+
 
     elif args.mode == 'sample':
-        model = build_model(node_feature_dim, args.embedding_dim, args.n_rounds, args.latent_dim, max_num_nodes)
+        model = build_model(node_feature_dim, args.embedding_dim, args.n_rounds, args.latent_dim, max_num_nodes, MUTAG_dataset)
         model.load_state_dict(torch.load('VAE_weights.pt', map_location=args.device))
         samples = model.sample(64)
         
