@@ -78,13 +78,14 @@ class MultiLayerPerceptron(torch.nn.Module):
         return self.layers(x)
 
 
-class RNN(torch.nn.Module):
+class GraphRNN(torch.nn.Module):
     def __init__(self,
-                 input_size: int,
+                 edge_input_size: int,
                  state_dim: int,
                  ):
         super().__init__()
-        self.rnn = torch.nn.GRUCell(input_size=input_size, hidden_size=state_dim)
+        self.graph_rnn = torch.nn.GRUCell(input_size=state_dim, hidden_size=state_dim)
+        self.node_rnn  = torch.nn.GRUCell(input_size=edge_input_size, hidden_size=state_dim)
         self.score_net = torch.nn.Sequential(
             torch.nn.Linear(state_dim, 64),
             torch.nn.ReLU(),
@@ -92,15 +93,20 @@ class RNN(torch.nn.Module):
             torch.nn.Sigmoid()
         )
 
-    def edge_prob(self, state: torch.Tensor):
+    def compute_edge_prob(self, state: torch.Tensor):
         return self.score_net(state)
     
-    def forward(self, input: torch.Tensor, state: torch.Tensor):
-        return self.rnn(input, state)
+
+    def graph_forward(self, graph_input: torch.Tensor, graph_state: torch.Tensor):
+        return self.graph_rnn(graph_input, graph_state)
+    
+
+    def node_forward(self, edge_input: torch.Tensor, node_state: torch.Tensor):
+        return self.node_rnn(edge_input, node_state)
 
 
 class Generator(torch.nn.Module):
-    def __init__(self, gnn: RNN|MultiLayerPerceptron, ndist: NDist, state_dim: int):
+    def __init__(self, gnn: GraphRNN|MultiLayerPerceptron, ndist: NDist, state_dim: int):
         super().__init__()
         self.gnn = gnn
         self.ndist = ndist
@@ -112,48 +118,44 @@ class Generator(torch.nn.Module):
 
 
     def compute_edge_dist_old(self, sample_shape: torch.Size):
+        """Simple MLP Generator (edge-wise)"""
         z = self.seed_dist.sample(sample_shape=sample_shape)
         ns = self.ndist.sample_N(sample_shape)
-
-        # stack n and z to provide some conditioning for the generator # TODO ns currently commented out
+        # stack n and z to provide some conditioning for the generator
         ns_conc = ns if ns.dim() == 2 else ns.unsqueeze(1)
-        # inp = torch.hstack([z.squeeze(-1)])#, ns_conc])
         inp = torch.hstack([z.squeeze(-1), ns_conc])
         bernoulli_params = self.sigmoid(self.gnn(inp))
-        # cont_dist for training, since we can backprop through it
+        # continuous distribution for training, since we can backprop through it
         return ns, td.Independent(td.ContinuousBernoulli(bernoulli_params), 1)
     
     
     def compute_edge_dist(self, sample_shape: torch.Size):
-        # TODO implement autoregressive generator approach (edge-wise) using RNN
-            # ! 1. sample number of nodes
-            # ! 2. sample z, i.e. initial state for our RNN
-            # todo 3. sample node feature for each node (same apporach as ndist I guess)
-            # todo 4. Run RNN as many times as we need to obtain all edge probabilities
-        #! 1.
+        """Autoregressive Generator (edge-wise) using node/edge-level RNN"""
+        # sample graph sizes n, and seed distribution z
         ns = self.ndist.sample_N(sample_shape)
-        
+        z = self.seed_dist.sample(sample_shape=sample_shape).squeeze(-1)
+
         # Iterate over all possible pairs of nodes to compute edge probabilities autoregressively
         max_triu_size_in_batch = self.triu_size(ns.max())
         batched_bernoulli_params = []
         for k,n in enumerate(ns):
-            z = self.seed_dist.sample(sample_shape=(n,)).squeeze()
+            graph_h = z[k] # set initial graph-level hidden state for GraphRNN to the seed distribution sample
             node_features = self.ndist.sample_node_features((n,), N=-1) # ? Note: not conditional on N currently
             bernoulli_params = []
-            for i in range(n-1): # ! n-1 or n ??
-                h = z[i]
+            for i in range(n-1): # ! n-1 or n ?
+                node_h = graph_h.clone() # initialize node-level hidden state for GraphRNN to last graph-level hidden state
                 edge_probs = []
-                for j in range(i + 1, n):  # Ensure i < j to handle undirected graphs
-                    # Compute input for the RNN: features of node i, features of node j, current hidden state
-                    edge_input = torch.cat([node_features[i], node_features[j], h], dim=-1)
-                    h = self.gnn(edge_input, h)        # Update hidden state
-                    edge_prob = self.gnn.edge_prob(h)  # Compute edge probability from updated hidden state
+                for j in range(i + 1, n): # Ensure i < j to handle undirected graphs
+                    edge_input = torch.cat([node_features[i], node_features[j], node_h], dim=-1)
+                    node_h = self.gnn.node_forward(edge_input, node_h) # Update node-level hidden state
+                    edge_prob = self.gnn.compute_edge_prob(node_h)     # Compute edge probability from node-level hidden state
                     edge_probs.append(edge_prob.squeeze())
+                graph_h = self.gnn.graph_forward(node_h, graph_h)      # Update graph-level hidden state
                 bernoulli_params.append(torch.hstack(edge_probs))
             zeros = torch.zeros(max_triu_size_in_batch - self.triu_size(n))
             bernoulli_params.append(zeros)
             batched_bernoulli_params.append(torch.hstack(bernoulli_params))
-        bernoulli_params = torch.vstack(batched_bernoulli_params) # TODO ensure all of these stacks work as intended :)    
+        bernoulli_params = torch.vstack(batched_bernoulli_params) # TODO ensure all of these stack ops work as intended :) - EDIT: seems to learn something
 
         return ns, td.Independent(td.ContinuousBernoulli(bernoulli_params), 1)
 
@@ -174,7 +176,8 @@ class Generator(torch.nn.Module):
             batches.append(torch.tensor(cur_n*[i]))
             node_counter += cur_n
         
-        x = self.static_x(node_counter)
+        # x = self.static_x(node_counter)
+        x = self.ndist.sample_node_features((node_counter,), N=-1)
         batched_soft_adj = torch.vstack(soft_adjs)
         batch = torch.hstack(batches)
 
@@ -227,8 +230,8 @@ class Generator(torch.nn.Module):
     def full_triu_idx(self):
         return torch.triu_indices(self.max_num_nodes,self.max_num_nodes,1)
     
-    def static_x(self, num_nodes: int):
-        return torch.ones((num_nodes,7))
+    # def static_x(self, num_nodes: int):
+    #     return torch.ones((num_nodes,7))
 
     def forward(self, num_samples: int = 1):
         sample_shape = (num_samples,)
@@ -245,9 +248,9 @@ class Discriminator(torch.nn.Module):
     def __init__(self, gnn: GAN_MPNN|GraphConvNN):
         super().__init__()
         self.gnn = gnn
-        # nonlinearity = torch.nn.Sigmoid # ! NOTE: could be source of instability!
+        # nonlinearity = torch.nn.Sigmoid   # ! NOTE: could be source of instability!
+        # nonlinearity = torch.nn.ReLU      # ! NOTE: could be source of instability!
         nonlinearity = torch.nn.LeakyReLU # ! NOTE: could be source of instability!
-        # nonlinearity = torch.nn.ReLU # ! NOTE: could be source of instability!
         # Project from state_dim to scalar and apply sigmoid => i.e. output probability
         self.score_model = torch.nn.Sequential(torch.nn.Linear(self.gnn.state_dim, 1), nonlinearity())
 
@@ -257,8 +260,8 @@ class Discriminator(torch.nn.Module):
             x = graphs.x
             adjs = to_dense_adj(graphs.edge_index, graphs.batch)
             # TODO: evaluate this smoothing => they suck (seemingly)
-            adjs *= (1. - torch.rand_like(adjs)*0.01) # ! smooth links
-            adjs += (torch.rand_like(adjs)*0.01)      # ! smooth nonlinks
+            adjs *= (1. - torch.rand_like(adjs)*0.05) # ! smooth links
+            adjs += (torch.rand_like(adjs)*0.05)      # ! smooth nonlinks
             adjs = torch.clamp(adjs, min=0, max=1)
             batch = graphs.batch
         else:
@@ -342,7 +345,7 @@ def train_gan(gan: GraphGAN,
     eval_freq = 5
     with tqdm(range(n_epochs)) as pbar:
         for epoch in pbar:
-            datas = get_shuffled_data() # TODO worth it to refactor not create new iterator every time?
+            datas = get_shuffled_data()
 
             # Discriminator training steps
             for k in range(disc_train_steps):
@@ -351,27 +354,24 @@ def train_gan(gan: GraphGAN,
                 combined_loss = gan(data, disc = True)
                 combined_loss.backward()
                 disc_optimizer.step()
-                # ! remove clipping if using non-Wasserstein GAN
-                # ! Clip weights of discriminator 
+                
+                # ! Clip weights of discriminator, in line with WGAN
                 for p in gan.discriminator.parameters():
-                    p.data.clamp_(-0.1, 0.1) # TODO find best clip value?
-                    # p.data.clamp_(-0.01, 0.01) # TODO find best clip value?
-                    # p.data.clamp_(-0.05, 0.05) # TODO find best clip value?
+                    p.data.clamp_(-0.05, 0.05) # Clip value in WGAN is (-0.01, 0.01), but we 
                 disc_optimizer.zero_grad()
+
             gen_optimizer.zero_grad()
             
             try: datas = get_shuffled_data(); data = next(datas)
             except Exception: datas = get_shuffled_data(); data = next(datas)
                 
             # Generator training steps
-            # gan.discriminator.requires_grad_ = False # disable gradients for discriminator
             for k in range(gen_train_steps):
                 adv_loss = gan(data, disc = False) # we only use data for batch size 
                 adv_loss.backward()
                 gen_optimizer.step()
                 gen_optimizer.zero_grad()
                 disc_optimizer.zero_grad()
-            # gan.discriminator.requires_grad_ = True # disable gradients for discriminator
             disc_optimizer.zero_grad()
 
             if (epoch % eval_freq == 0):
@@ -389,6 +389,9 @@ def train_gan(gan: GraphGAN,
                 plt.close('all') # ? clean up
 
             if (epoch % 250 == 0) or (epoch == n_epochs-1): # make sample plots
+                if epoch != 0: # back up model state dict
+                    torch.save(gan.state_dict(), f'{model_dir}/backup/ep{epoch}_{model_state_dict_path}')
+
                 fig, axs = plt.subplots(3, 3, figsize=(18, 18))  # Create a grid of 3x3 for 3 rows and 3 columns
                 for _i in range(3):
                     for _j in range(3):
@@ -413,8 +416,8 @@ if __name__ == '__main__':
     parser.add_argument('--batch-size', type=int, default=32, help='batch size for training (default: %(default)s)')
     parser.add_argument('--n-epochs', type=int, default=5_001, help='number of epochs to train (default: %(default)s)')
     parser.add_argument('--state-dim', type=int, default=10, help='dimension of node state variables (default: %(default)s)')
-    parser.add_argument('--num-hidden-gen-mlp', type=int, default=128, help='number of hidden units for each layer of the generator\'s MLP (default: %(default)s)')
-    parser.add_argument('--num-layers-gen-mlp', type=int, default=5, help='number of hidden layers for each layer of the generator\'s MLP (default: %(default)s)')
+    parser.add_argument('--num-hidden-gen-mlp', type=int, default=64, help='number of hidden units for each layer of the generator\'s MLP (default: %(default)s)')
+    parser.add_argument('--num-layers-gen-mlp', type=int, default=2, help='number of hidden layers for each layer of the generator\'s MLP (default: %(default)s)')
     parser.add_argument('--gen-lr',  type=float, default=1e-5, help='learning rate for generator (default: %(default)s)')
     parser.add_argument('--disc-lr', type=float, default=1e-5, help='learning rate for discriminator (default: %(default)s)')
     args = parser.parse_args()
@@ -431,7 +434,6 @@ if __name__ == '__main__':
         """
         ================================================Train================================================
         """
-        # ! hyperparams / training specific
         disc_net =               args.disc_net
         state_dim =              args.state_dim
         message_passing_rounds = args.mp_rounds
@@ -459,7 +461,7 @@ if __name__ == '__main__':
         #                                max_output_dim=max_output_dim, 
         #                                num_hidden=num_hidden_units, 
         #                                num_layers=num_layers)
-        gen_net = RNN(state_dim=state_dim, input_size=node_feature_dim*2+state_dim) # TODO what is input_size?
+        gen_net = GraphRNN(state_dim=state_dim, edge_input_size=node_feature_dim*2+state_dim) # ! this version using GraphRNN
         gen = Generator(gen_net, ndist=ndist, state_dim=state_dim)
 
         # ! util function to sample 1 plot-ready adj matrix from the generator and dataset

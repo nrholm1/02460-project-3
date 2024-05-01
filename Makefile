@@ -43,7 +43,7 @@ train-gan:
 		--gen-lr  0.00005 \
 		--disc-lr 0.00005 \
 		--gen-train-steps  1 \
-		--disc-train-steps 3 \
+		--disc-train-steps 5 \
 		--mp-rounds 5 \
 		--batch-size 10
 # $(PYTHON_INTERPRETER) $(gan-main) train --n-epochs 25000 --gen-lr 0.0001 --disc-lr 0.0001 --disc-train-steps 3 ##! cfg1 with modified loss: quite okay settings
