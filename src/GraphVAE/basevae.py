@@ -117,7 +117,7 @@ class VAE(nn.Module):
         """
         samples = []
         for i in range(n_samples):
-            n_nodes = self.ndist.sample((1,)) # sample number of nodes
+            n_nodes = self.ndist.sample_N((1,)) # sample number of nodes
             
             # sample full max_nodes x max_nodes A matrix
             z = self.prior().sample(torch.Size([1]))

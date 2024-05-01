@@ -405,6 +405,7 @@ def create_gan_model(dataset,
                      state_dim = 10):
         # create distribution of node counts over the dataset
         ndist = NDist(dataset)
+        node_feature_dim = 7 # const
 
         # create generator
         gen_net = GraphRNN(state_dim=state_dim, edge_input_size=node_feature_dim*2+state_dim) # ! this version using GraphRNN
