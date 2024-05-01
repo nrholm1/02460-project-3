@@ -33,6 +33,11 @@ class NDist:
         N_dist = torch.vstack(torch.unique(nodes_per_graph, return_counts=True))
         N_dist = N_dist.float()
 
+        # compute empirical distribution of node features
+        # ! iteration 1: unconditional feature dist
+        num_nodes = graphs.x.shape[0]
+        self.node_feature_probs = graphs.x.sum(dim=0) / num_nodes
+
         N_dist[1] /= num_graphs # finally, convert counts to probabilities (we needed to use it to compute probs_given_N)
         self._N_dist = N_dist
     
@@ -40,9 +45,17 @@ class NDist:
     def max_nodes(self):
         return self._N_dist[0].max().int().item()
 
-    def sample(self, sample_shape: torch.Size):
+    def sample_N(self, sample_shape: torch.Size):
         idx = torch.multinomial(self._N_dist[1], num_samples=sample_shape[0], replacement=True)
         return self._N_dist[0, idx].int()
+    
+    def sample_node_features(self, sample_shape: torch.Size, N: int = -1):
+        # TODO currently not conditional on N
+        idx = torch.multinomial(self.node_feature_probs, num_samples=sample_shape[0], replacement=True)
+        one_hot = torch.zeros(sample_shape[0],7)
+        one_hot[torch.arange(sample_shape[0]), idx] = 1
+        return one_hot
+        
 
 
 class MultiLayerPerceptron(torch.nn.Module):
@@ -65,8 +78,29 @@ class MultiLayerPerceptron(torch.nn.Module):
         return self.layers(x)
 
 
+class RNN(torch.nn.Module):
+    def __init__(self,
+                 input_size: int,
+                 state_dim: int,
+                 ):
+        super().__init__()
+        self.rnn = torch.nn.GRUCell(input_size=input_size, hidden_size=state_dim)
+        self.score_net = torch.nn.Sequential(
+            torch.nn.Linear(state_dim, 64),
+            torch.nn.ReLU(),
+            torch.nn.Linear(64, 1),
+            torch.nn.Sigmoid()
+        )
+
+    def edge_prob(self, state: torch.Tensor):
+        return self.score_net(state)
+    
+    def forward(self, input: torch.Tensor, state: torch.Tensor):
+        return self.rnn(input, state)
+
+
 class Generator(torch.nn.Module):
-    def __init__(self, gnn: GAN_MPNN|GraphConvNN|MultiLayerPerceptron, ndist: NDist, state_dim: int):
+    def __init__(self, gnn: RNN|MultiLayerPerceptron, ndist: NDist, state_dim: int):
         super().__init__()
         self.gnn = gnn
         self.ndist = ndist
@@ -77,10 +111,9 @@ class Generator(torch.nn.Module):
         self.seed_dist = td.Independent(td.Normal(loc=_loc,scale=_scale), 1)
 
 
-    def compute_edge_dist(self, 
-                        sample_shape: torch.Size):
+    def compute_edge_dist_old(self, sample_shape: torch.Size):
         z = self.seed_dist.sample(sample_shape=sample_shape)
-        ns = self.ndist.sample(sample_shape)
+        ns = self.ndist.sample_N(sample_shape)
 
         # stack n and z to provide some conditioning for the generator # TODO ns currently commented out
         ns_conc = ns if ns.dim() == 2 else ns.unsqueeze(1)
@@ -88,6 +121,40 @@ class Generator(torch.nn.Module):
         inp = torch.hstack([z.squeeze(-1), ns_conc])
         bernoulli_params = self.sigmoid(self.gnn(inp))
         # cont_dist for training, since we can backprop through it
+        return ns, td.Independent(td.ContinuousBernoulli(bernoulli_params), 1)
+    
+    
+    def compute_edge_dist(self, sample_shape: torch.Size):
+        # TODO implement autoregressive generator approach (edge-wise) using RNN
+            # ! 1. sample number of nodes
+            # ! 2. sample z, i.e. initial state for our RNN
+            # todo 3. sample node feature for each node (same apporach as ndist I guess)
+            # todo 4. Run RNN as many times as we need to obtain all edge probabilities
+        #! 1.
+        ns = self.ndist.sample_N(sample_shape)
+        
+        # Iterate over all possible pairs of nodes to compute edge probabilities autoregressively
+        max_triu_size_in_batch = self.triu_size(ns.max())
+        batched_bernoulli_params = []
+        for k,n in enumerate(ns):
+            z = self.seed_dist.sample(sample_shape=(n,)).squeeze()
+            node_features = self.ndist.sample_node_features((n,), N=-1) # ? Note: not conditional on N currently
+            bernoulli_params = []
+            for i in range(n-1): # ! n-1 or n ??
+                h = z[i]
+                edge_probs = []
+                for j in range(i + 1, n):  # Ensure i < j to handle undirected graphs
+                    # Compute input for the RNN: features of node i, features of node j, current hidden state
+                    edge_input = torch.cat([node_features[i], node_features[j], h], dim=-1)
+                    h = self.gnn(edge_input, h)        # Update hidden state
+                    edge_prob = self.gnn.edge_prob(h)  # Compute edge probability from updated hidden state
+                    edge_probs.append(edge_prob.squeeze())
+                bernoulli_params.append(torch.hstack(edge_probs))
+            zeros = torch.zeros(max_triu_size_in_batch - self.triu_size(n))
+            bernoulli_params.append(zeros)
+            batched_bernoulli_params.append(torch.hstack(bernoulli_params))
+        bernoulli_params = torch.vstack(batched_bernoulli_params) # TODO ensure all of these stacks work as intended :)    
+
         return ns, td.Independent(td.ContinuousBernoulli(bernoulli_params), 1)
 
 
@@ -186,7 +253,8 @@ class Discriminator(torch.nn.Module):
 
     def forward(self, graphs: tuple|Batch):
         if graphs.__class__.__name__ == 'DataBatch': # TODO give mode instead?
-            static_x = torch.ones_like(graphs.x) # ! NOTE: Verify that this does not break stuff
+            # static_x = torch.ones_like(graphs.x) # ! NOTE: Verify that this does not break stuff
+            x = graphs.x
             adjs = to_dense_adj(graphs.edge_index, graphs.batch)
             # TODO: evaluate this smoothing => they suck (seemingly)
             adjs *= (1. - torch.rand_like(adjs)*0.01) # ! smooth links
@@ -194,8 +262,8 @@ class Discriminator(torch.nn.Module):
             adjs = torch.clamp(adjs, min=0, max=1)
             batch = graphs.batch
         else:
-            static_x, adjs, batch = graphs # from generator
-        state = self.gnn(static_x.double(), adjs, batch)
+            x, adjs, batch = graphs # from generator
+        state = self.gnn(x.double(), adjs, batch)
         return self.score_model(state)
 
 
@@ -271,7 +339,7 @@ def train_gan(gan: GraphGAN,
 
     D_x_s = []
     D_G_z_s = []
-    eval_freq = 25
+    eval_freq = 5
     with tqdm(range(n_epochs)) as pbar:
         for epoch in pbar:
             datas = get_shuffled_data() # TODO worth it to refactor not create new iterator every time?
@@ -320,7 +388,7 @@ def train_gan(gan: GraphGAN,
                 plt.savefig("gan_training_curve.pdf")
                 plt.close('all') # ? clean up
 
-            if (epoch % 1_000 == 0) or (epoch == n_epochs-1): # make sample plots
+            if (epoch % 250 == 0) or (epoch == n_epochs-1): # make sample plots
                 fig, axs = plt.subplots(3, 3, figsize=(18, 18))  # Create a grid of 3x3 for 3 rows and 3 columns
                 for _i in range(3):
                     for _j in range(3):
@@ -387,10 +455,11 @@ if __name__ == '__main__':
         max_output_dim = int(max_num_nodes*(max_num_nodes-1)/2)
 
         # create generator and discriminator
-        gen_net = MultiLayerPerceptron(state_dim=state_dim, 
-                                       max_output_dim=max_output_dim, 
-                                       num_hidden=num_hidden_units, 
-                                       num_layers=num_layers)
+        # gen_net = MultiLayerPerceptron(state_dim=state_dim, 
+        #                                max_output_dim=max_output_dim, 
+        #                                num_hidden=num_hidden_units, 
+        #                                num_layers=num_layers)
+        gen_net = RNN(state_dim=state_dim, input_size=node_feature_dim*2+state_dim) # TODO what is input_size?
         gen = Generator(gen_net, ndist=ndist, state_dim=state_dim)
 
         # ! util function to sample 1 plot-ready adj matrix from the generator and dataset
