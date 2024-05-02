@@ -59,7 +59,7 @@ class VAE(nn.Module):
         """
 
         Adj_pred = self.decoder(z).base_dist # predict adjacency matrix 
-        n_perms = 10
+        n_perms = 2
         rec_errors = torch.empty((Adj.size(0), n_perms))
         
         for i in range(Adj.size(0)): # loop over number of permutations to try
@@ -71,8 +71,14 @@ class VAE(nn.Module):
 
                 rec_errors[i, j] = rec_error
         
-        # return torch.sum(torch.max(rec_errors, dim=1).values)
-        return torch.max(rec_errors)
+        return torch.max(rec_errors, dim=1).values
+        # return torch.max(rec_errors)
+    
+    def naive_reconstruction(self, z, Adj, node_masks):
+        Adj_pred = self.decoder(z).base_dist # predict adjacency matrix
+        rec_error = self.calc_log_prob(Adj_pred, Adj, node_masks)
+        return torch.max(rec_error)
+
 
     def elbo(self, x, edge_index, batch, Adj, node_masks):
         """
@@ -87,9 +93,10 @@ class VAE(nn.Module):
         """
         q = self.encoder(x, edge_index, batch)
         z = q.rsample() # reparameterization
-        
         RE = self.simple_reconstruction_with_perm(z, Adj, node_masks)
         # RE = self.calc_log_prob(z, Adj, node_masks) #self.decoder(z)[node_masks].log_prob(Adj[node_masks])
+        # RE = self.naive_reconstruction(z, Adj, node_masks_ones)
+        RE = torch.mean(torch.sort(RE, dim=-1, descending=True)[0][:int(Adj.size(0) * 0.05)])
         KL = q.log_prob(z) - self.prior().log_prob(z)
 
         elbo = (RE - KL).mean()
@@ -117,23 +124,23 @@ class VAE(nn.Module):
            Number of samples to generate.
         """
         samples = []
-        logits = torch.zeros(1, 28, 28)
+        mu_probs = torch.zeros(1, 28, 28)
         for i in range(n_samples):
             n_nodes = self.ndist.sample_N((1,)) # sample number of nodes
             
             # sample full max_nodes x max_nodes A matrix
             z = self.prior().sample(torch.Size([1]))
             decoder_sample = self.decoder(z).sample()
-            logits += self.decoder(z).base_dist.probs
+            mu_probs += self.decoder(z).base_dist.probs
             upper = torch.triu(decoder_sample, diagonal=1)
             Adj_sample = upper + upper.transpose(1, 2)
             # downsample A
             Adj_downsampled = self.mask_sample(Adj_sample, n_nodes[0])
             # store
             samples.append(Adj_downsampled)
-        logits /= n_samples
+        mu_probs /= n_samples
 
-        return samples, logits
+        return samples, mu_probs
 
     def mask_sample(self, Adj_sample, n_nodes: int):
         mask = torch.zeros_like(Adj_sample)
@@ -188,11 +195,14 @@ class GaussianEncoder(nn.Module):
 
         Returns 
         """
-        mean = self.mu_encoder_net(x, edge_index, batch)
-        std = self.sigma_encoder_net(x, edge_index, batch)
+        if self.sigma_encoder_net is None:
+            mean, log_std = torch.chunk(self.mu_encoder_net(x, edge_index, batch), 2, dim=-1)
+        else:
+            mean = self.mu_encoder_net(x, edge_index, batch)
+            log_std = self.sigma_encoder_net(x, edge_index, batch)
         
         # NOTE: a small number is added to avoid error
-        return td.Independent(td.Normal(loc=mean, scale=torch.exp(std)+1e-6), 1)
+        return td.Independent(td.Normal(loc=mean, scale=torch.exp(log_std)+1e-6), 1)
         
 class BernoulliDecoder(nn.Module):
     def __init__(self, decoder_net):

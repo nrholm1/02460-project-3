@@ -197,12 +197,14 @@ def make_histograms_rows(dataset, sample_folders, plot_colors, save_path="sample
         min_cluster, max_cluster = min(avg_clustercoefficients), max(avg_clustercoefficients)
         global_min_cluster, global_max_cluster = min(global_min_cluster, min_cluster), max(global_max_cluster, max_cluster)
         bins_clustercoefficients = np.arange(min_cluster, max_cluster + bin_widht_clustercoefficients, bin_widht_clustercoefficients)
+        if bins_clustercoefficients.shape[0] == 1 and bins_clustercoefficients[0] == 0:
+            # make the widtht of bin_widht_clustercoefficients around 0
+            bins_clustercoefficients = np.array([-bin_widht_clustercoefficients/2, bin_widht_clustercoefficients/2])
 
         bin_width_eigenvector_centralities = 0.02
         min_eigenvector, max_eigenvector = min(avg_eigenvector_centralities), max(avg_eigenvector_centralities)
         global_min_eigenvector, global_max_eigenvector = min(global_min_eigenvector, min_eigenvector), max(global_max_eigenvector, max_eigenvector)
         bins_eigenvector_centralities = np.arange(min_eigenvector, max_eigenvector + bin_width_eigenvector_centralities, bin_width_eigenvector_centralities)
-
         # Average Degree Histogram
         axs[n,0].hist(avg_degrees, bins=bins_degrees,color=plot_colors[label], alpha=0.3, edgecolor='black', linewidth=1.2, label=label)
         # Average Cluster Coefficient Histogram
@@ -233,7 +235,7 @@ def make_histograms_rows(dataset, sample_folders, plot_colors, save_path="sample
         if n == len(sample_folders) - 1:
             axs[n, 1].set_xlabel("Cluster Coefficient", fontsize=6)
         # axs[n, 1].set_ylabel("Percentage (%)")
-        axs[n, 1].set_xlim(left=-1)
+        axs[n, 1].set_xlim(left=0)
 
         if n == 0:
             axs[n, 2].set_title("Avg. Eigenv. Centrality Hist.", fontsize=8)
@@ -272,14 +274,16 @@ if __name__ == "__main__":
     parser.add_argument("--sample", action="store_true")
     parser.add_argument("--histogram", action="store_true")
     parser.add_argument("--table", action="store_true")
+    parser.add_argument("--plot-grid", default=None, type=str, choices=[None, "baseline", "gan", "vae"], help="Choose which model to plot the grid from.")
+    parser.add_argument("--plot-mean", default=None, type=str, choices=[None, "baseline", "gan", "vae"], help="Choose which model to plot the mean graph from.")
     parser.add_argument("--num-samples", type=int, default=1000)
     parser.add_argument("--gan-model-path", type=str, default=None)
     parser.add_argument("--gan-statedim", type=int, default=10)
     parser.add_argument("--gan-mp-rounds", type=int, default=5)
     parser.add_argument("--vae-model-path", type=str, default=None)
-    parser.add_argument("--vae-embedding-dim", type=int, default=16)
-    parser.add_argument("--vae-M", type=int, default=16)
-    parser.add_argument("--vae-n-message-passing-rounds", type=int, default=25)
+    parser.add_argument("--vae-embedding-dim", type=int, default=7)
+    parser.add_argument("--vae-M", type=int, default=2)
+    parser.add_argument("--vae-n-message-passing-rounds", type=int, default=4)
 
     
     args = parser.parse_args()
@@ -301,7 +305,7 @@ if __name__ == "__main__":
     if args.vae_model_path:
         ndist = NDist(dataset)
         vae_model = build_model(node_feature_dim=7, embedding_dim=args.vae_embedding_dim, M=args.vae_M,
-                                n_message_passing_rounds=args.vae_n_message_passing_rounds, NDist_dataset=dataset)
+                                n_message_passing_rounds=args.vae_n_message_passing_rounds, NDist_dataset=dataset, naive=True)
         vae_model.load_state_dict(torch.load(args.vae_model_path, map_location="cpu"))
 
     if args.sample:
@@ -325,7 +329,7 @@ if __name__ == "__main__":
         make_histograms_rows(dataset, sample_folders, plot_colors, save_path="samples/histograms_rows.pdf")
 
     if args.table:
-        from src.eval_metrics import compute_graph_hashes, eval_novelty, eval_unique
+        from src.eval_metrics import compute_graph_hashes, eval_novelty, eval_unique, eval_novel_and_unique
 
         dataset_hashes = compute_graph_hashes([to_dense_adj(data.edge_index).squeeze() for data in dataset], return_list=True)
         # make a list of the dataset and add half of the dataset to the list
@@ -337,6 +341,51 @@ if __name__ == "__main__":
                 gen_graph_hashes = compute_graph_hashes(samples, return_list=True)
                 novelty = eval_novelty(gen_graph_hashes, dataset_hashes)
                 uniqueness = eval_unique(gen_graph_hashes)
+                novelty_and_unique = eval_novel_and_unique(gen_graph_hashes, dataset_hashes)
                 print(f"Novelty for {label}: {novelty}")
                 print(f"Uniqueness for {label}: {uniqueness}")
+                print(f"Novelty and Uniqueness for {label}: {novelty_and_unique}")
 
+    if args.plot_grid:
+        from src.utils import plot_adj
+        import matplotlib.pyplot as plt
+
+        sample_folder = sample_folders[args.plot_grid]
+        samples = [torch.load(os.path.join(sample_folder, f)) for f in os.listdir(sample_folder)]
+
+        fig, axs = plt.subplots(4, 4, figsize=(12, 12))
+        for i in range(4):
+            for j in range(4):
+                adj = samples[i*4 + j]
+
+                plot_adj(adj, ax=axs[i, j])
+        
+        # remove axis labels
+        for ax in axs.flat:
+            ax.set(xticks=[], yticks=[])
+
+        # remove titles
+        for ax in axs.flat:
+            ax.set_title("")
+
+        plt.tight_layout()
+        plt.show()
+
+    if args.plot_mean:
+        from src.utils import plot_adj
+        import matplotlib.pyplot as plt
+
+        sample_folder = sample_folders[args.plot_mean]
+        samples = [torch.load(os.path.join(sample_folder, f)) for f in os.listdir(sample_folder)]
+
+        max_size = max([sample.size(0) for sample in samples])
+
+        mean_adj = torch.zeros(max_size, max_size)
+        for sample in samples:
+            mean_adj[:sample.size(0), :sample.size(0)] += sample
+        mean_adj /= len(samples)
+
+        plt.imshow(mean_adj, cmap='Greys', vmin=0, vmax=torch.max(mean_adj).item())
+        plt.show()
+
+    

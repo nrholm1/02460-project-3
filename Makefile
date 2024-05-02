@@ -65,8 +65,8 @@ results-sample:
 
 results-histogram:
 	$(PYTHON_INTERPRETER) src/sample_histograms.py --histogram --vae-model-path $(VAE_MODEL_PATH) \
-	 --gan-model-path $(GAN_MODEL_PATH) --vae-embedding-dim 7 --vae-M 2 --vae-n-message-passing-rounds 5
+	--vae-embedding-dim 7 --vae-M 2 --vae-n-message-passing-rounds 4
 
 results-table:
 	$(PYTHON_INTERPRETER) src/sample_histograms.py --table --vae-model-path $(VAE_MODEL_PATH) \
-	 --gan-model-path $(GAN_MODEL_PATH) --vae-embedding-dim 7 --vae-M 2 --vae-n-message-passing-rounds 5
+	--vae-embedding-dim 7 --vae-M 2 --vae-n-message-passing-rounds 4

@@ -92,12 +92,15 @@ class NaiveVAE(nn.Module):
         q = self.encoder(x, edge_index, batch)
         z = q.rsample() # reparameterization
         RE =  self.decoder(z).log_prob(Adj)
-        RE = torch.max(RE, axis=0)[0]
+        
+        RE = torch.mean(torch.sort(RE, dim=-1, descending=True)[0][:int(Adj.size(0) * 0.05)])
+        # pdb.set_trace()
+        # RE = self.calc_log_prob(self.decoder(z).base_dist, Adj, node_masks)
+        # RE = torch.max(RE, axis=0)[0]
         KL = q.log_prob(z) - self.prior().log_prob(z)
-
         elbo = (RE - KL).mean()
         """
-        Original code: 
+        Original code:
         elbo_old = torch.mean(self.decoder(z).log_prob(x) - td.kl_divergence(q, self.prior()), dim=0)
         """
         return elbo
@@ -120,20 +123,23 @@ class NaiveVAE(nn.Module):
            Number of samples to generate.
         """
         samples = []
+        logits = torch.zeros(1, 28, 28)
         for i in range(n_samples):
-            n_nodes = self.ndist.sample((1,)) # sample number of nodes
+            n_nodes = self.ndist.sample_N((1,)) # sample number of nodes
             
             # sample full max_nodes x max_nodes A matrix
             z = self.prior().sample(torch.Size([1]))
             decoder_sample = self.decoder(z).sample()
+            logits += self.decoder(z).base_dist.probs
             upper = torch.triu(decoder_sample, diagonal=1)
             Adj_sample = upper + upper.transpose(1, 2)
             # downsample A
             Adj_downsampled = self.mask_sample(Adj_sample, n_nodes[0])
             # store
             samples.append(Adj_downsampled)
+        logits /= n_samples
 
-        return samples
+        return samples, logits
 
     def mask_sample(self, Adj_sample, n_nodes: int):
         mask = torch.zeros_like(Adj_sample)
@@ -189,7 +195,7 @@ class GaussianEncoder(nn.Module):
         Returns 
         """
         if self.sigma_encoder_net is None: # single network
-            mean, log_std = torch.chunk(self.mu_encoder_net(x, edge_index, batch))
+            mean, log_std = torch.chunk(self.mu_encoder_net(x, edge_index, batch), 2, dim=-1)
         
         else:
             mean = self.mu_encoder_net(x, edge_index, batch)

@@ -11,7 +11,7 @@ from torch_geometric.utils import to_dense_adj
 from src.graph_statistics import GraphStatistics
 from src.baseline import Baseline
 from src.graphgan import NDist
-
+import matplotlib.pyplot as plt
 
 def simple_permute_example():
     Adj_true = torch.zeros((5, 5))
@@ -51,14 +51,14 @@ if __name__ == '__main__':
     # Parse arguments
     
     parser = argparse.ArgumentParser()
-    parser.add_argument('mode', type=str, default='train', choices=['train', 'sample', 'eval', 'sample_posterior'], help='what to do when running the script (default: %(default)s)')
+    parser.add_argument('mode', type=str, default='train', choices=['train', 'sample', 'eval', 'train_naive'], help='what to do when running the script (default: %(default)s)')
     parser.add_argument('--model', type=str, default='model.pt', help='file to save model to or load model from (default: %(default)s)')
     parser.add_argument('--samples', type=str, default='samples.png', help='file to save samples in (default: %(default)s)')
     parser.add_argument('--device', type=str, default='cpu', choices=['cpu', 'cuda', 'mps'], help='torch device (default: %(default)s)')
     parser.add_argument('--batch-size', type=int, default=32, metavar='N', help='batch size for training (default: %(default)s)')
-    parser.add_argument('--epochs', type=int, default=1000, metavar='N', help='number of epochs to train (default: %(default)s)')
-    parser.add_argument('--n-rounds', type=int, default=5, metavar='N', help='Number of message passing rounds encoder network (default: %(default)s)')
-    parser.add_argument('--embedding-dim', type=int, default=8, metavar='N', help='embedding dimension of encoder network (default: %(default)s)')
+    parser.add_argument('--epochs', type=int, default=10000, metavar='N', help='number of epochs to train (default: %(default)s)')
+    parser.add_argument('--n-rounds', type=int, default=4, metavar='N', help='Number of message passing rounds encoder network (default: %(default)s)')
+    parser.add_argument('--embedding-dim', type=int, default=7, metavar='N', help='embedding dimension of encoder network (default: %(default)s)')
     parser.add_argument('--latent-dim', type=int, default=2, metavar='N', help='dimension of latent variable (default: %(default)s)')
     parser.add_argument('--prior', type=str, default='Standard_Normal', choices=['Standard_Normal', 'MoG', 'Flow', 'Vamp'], help='Type of prior distribution over latents e.g. p(z)')
     parser.add_argument('--k', type=int, default=1, help='The sample size when using IWAE loss (default: %(default)s)')
@@ -75,36 +75,85 @@ if __name__ == '__main__':
     rng = torch.Generator().manual_seed(0)
     train_dataset, test_dataset = random_split(MUTAG_dataset, (100, 88), generator=rng)
     # Create dataloader for training and validation
-    train_loader = DataLoader(train_dataset, batch_size=100)
-    test_loader = DataLoader(test_dataset, batch_size=88)
+    # train_loader = DataLoader(train_dataset, batch_size=100)
+    # test_loader = DataLoader(test_dataset, batch_size=88)
+    train_loader = DataLoader(MUTAG_dataset, batch_size=188)
+    test_loader = DataLoader(MUTAG_dataset, batch_size=188)
 
     if args.mode == 'train':
-        model = build_model(node_feature_dim, args.embedding_dim, args.n_rounds, args.latent_dim, MUTAG_dataset)
+        torch.manual_seed(0)
+        model = build_model(node_feature_dim, args.embedding_dim, args.n_rounds, args.latent_dim, MUTAG_dataset, naive=False)
         optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
         
         trainer = VAETrainer(model, optimizer, train_loader, args.epochs, args.device)
         trainer.train()
     
+    elif args.mode == 'train_naive':
+        model = build_model(node_feature_dim, args.embedding_dim, args.n_rounds, args.latent_dim, MUTAG_dataset, naive=True)
+        optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+
+        trainer = VAETrainer(model, optimizer, train_loader, args.epochs, args.device)
+        trainer.train()
+
     elif args.mode == 'eval':
         ### Evaluate negative ELBO
-        model = build_model(node_feature_dim, args.embedding_dim, args.n_rounds, args.latent_dim, MUTAG_dataset)
-        # model.load_state_dict(torch.load('VAE_weights.pt', map_location=args.device))
+        model = build_model(node_feature_dim, args.embedding_dim, args.n_rounds, args.latent_dim, MUTAG_dataset, naive=True)
+        model.load_state_dict(torch.load('models/VAE_weights.pt', map_location=args.device))
         
         evaluate(model, test_loader, device=args.device)
 
         ### Evaluate uniqueness and novelty
         N_samples_novelty = 1000
         num_nodes_distribution = NDist(MUTAG_dataset)
-
         
         # model = build_model(node_feature_dim, args.embedding_dim, args.n_rounds, args.latent_dim, max_num_nodes)
         # model.load_state_dict(torch.load('VAE_weights.pt', map_location=args.device))
         import matplotlib.pyplot as plt
-        VAE_samples, VAE_mean_logits = model.sample(N_samples_novelty)
-        mu_Adj = VAE_mean_logits.detach().view(28,28,1).numpy()
+        # VAE_samples, VAE_mean_probs = model.sample(N_samples_novelty)
+        # mu_Adj = VAE_mean_probs.detach().view(28,28,1).numpy()
         
-        plt.imshow(mu_Adj)
-        plt.show()
+        # plt.imshow(mu_Adj)
+        # plt.colorbar()
+        # plt.savefig('VAE_mean_probs_1000.png')
+        # plt.show()
+        # plt.close()
+
+        # pdb.set_trace()
+
+
+        # Adj_probs = torch.empty((4, 28, 28))
+        fig, ax = plt.subplots(1,1)
+        for i in range(4):
+            _, probs = model.sample(1)
+            probs = probs.detach().view(28, 28, 1).numpy()
+            # Adj_probs[i, :, :] = probs
+            im = ax.imshow(probs, vmin=0., vmax=1.)
+            ax.get_xaxis().set_visible(False)
+            ax.get_yaxis().set_visible(False)
+            plt.savefig(f'VAE_{i+1}_samples.png')
+            # ax[i].colorbar()
+        
+        # cbar_ax = fig.add_axes([0.85, 0.15, 0.05, 0.7])
+        
+        # divider = make_axes_locatable(ax)
+        # cax = divider.append_axes("right", size="5%", pad=0.05)
+        fig.colorbar(im)
+        
+        # fig.colorbar()
+        
+            
+        
+        
+        # VAE_mean_sample = torch.mean(VAE_samples, dim=0)
+        # plt.imshow(VAE_mean_sample, cmap='gray')
+        # plt.show()
+        # fig, ax = plt.subplots(4,1)
+
+        # for i in range(4):
+        #     ax[i].spy(VAE_samples[i+15])
+        #     ax[i].get_xaxis().set_visible(False)
+        
+        # plt.show()
         
         sample_model = lambda _model: to_dense_adj(_model()).squeeze()
         baseline_model = Baseline(test_dataset)

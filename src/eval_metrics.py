@@ -2,6 +2,7 @@
 import torch
 from torch_geometric.utils import to_dense_adj
 from networkx import connected_components, weisfeiler_lehman_graph_hash, from_numpy_array as nx_from_numpy_array, to_numpy_array
+import pdb
 
 def adj_tensor_to_nx_graph(adj: torch.Tensor):
     adj = adj.detach().numpy() # detach (if for any reason there is a grad)
@@ -22,15 +23,15 @@ def isomorphic(g1: torch.Tensor, g2: torch.Tensor) -> bool:
     G2 = adj_tensor_to_nx_graph(g2)
     
     # Extract the largest connected component
-    G1_lcc = max(connected_components(G1), key=len, default=set())
-    G2_lcc = max(connected_components(G2), key=len, default=set())
-    G1_lcc = G1.subgraph(G1_lcc).copy()
-    G2_lcc = G2.subgraph(G2_lcc).copy()
+    # G1_lcc = max(connected_components(G1), key=len, default=set())
+    # G2_lcc = max(connected_components(G2), key=len, default=set())
+    # G1_lcc = G1.subgraph(G1_lcc).copy()
+    # G2_lcc = G2.subgraph(G2_lcc).copy()
 
     # compute graph hashes, which are identical between two graphs iff they are isomorphic
     # ? Note: in theory you could have hash collisions, but probability is negligible
-    gh1 = weisfeiler_lehman_graph_hash(G1_lcc)
-    gh2 = weisfeiler_lehman_graph_hash(G2_lcc)
+    gh1 = weisfeiler_lehman_graph_hash(G1)
+    gh2 = weisfeiler_lehman_graph_hash(G2)
     return gh1 == gh2
 
 
@@ -61,13 +62,26 @@ def eval_unique(gen_graph_hashes: list[str]) -> float:
     Count percentage of sampled graphs that are unique, i.e. only exist once in the set.
         Ex.: [a,a,b,c] -> 0.5, since only b,c are unique.
     """
-    id_map = {hash: idx for idx, hash in enumerate(set(gen_graph_hashes))}
-    mapped_hash_list = [id_map[h] for h in gen_graph_hashes]
-    hash_counts = torch.tensor(mapped_hash_list).unique(return_counts=True)[1]
-    num_appear_once = torch.sum(hash_counts == 1)
-    return (num_appear_once / len(gen_graph_hashes)).item()
+    # id_map = {hash: idx for idx, hash in enumerate(set(gen_graph_hashes))}
+    # mapped_hash_list = [id_map[h] for h in gen_graph_hashes]
+    # hash_counts = torch.tensor(mapped_hash_list).unique(return_counts=True)[1]
+    # num_appear_once = torch.sum(hash_counts == 1)
+    # return (num_appear_once / len(gen_graph_hashes)).item()
 
+    # new interpretation. Ex.: [a,a,b,c] -> 0.75, since a,b,c is the unique subset of the list.
+    unique_hashes = set(gen_graph_hashes)
+    return len(unique_hashes) / len(gen_graph_hashes)
 
+def eval_novel_and_unique(gen_graph_hashes: list[str], true_graph_hashes: set[str]) -> tuple[float, float]:
+    """
+    Find percentage of novel graphs that are also unique.
+    """
+    novel_hashes = []
+    for hash in gen_graph_hashes:
+        if hash not in true_graph_hashes and hash not in novel_hashes:
+            novel_hashes.append(hash)
+        
+    return len(novel_hashes) / len(gen_graph_hashes)
 
 if __name__ == '__main__':
     import matplotlib.pyplot as plt
