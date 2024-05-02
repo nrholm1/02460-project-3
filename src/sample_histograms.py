@@ -197,12 +197,14 @@ def make_histograms_rows(dataset, sample_folders, plot_colors, save_path="sample
         min_cluster, max_cluster = min(avg_clustercoefficients), max(avg_clustercoefficients)
         global_min_cluster, global_max_cluster = min(global_min_cluster, min_cluster), max(global_max_cluster, max_cluster)
         bins_clustercoefficients = np.arange(min_cluster, max_cluster + bin_widht_clustercoefficients, bin_widht_clustercoefficients)
+        if bins_clustercoefficients.shape[0] == 1 and bins_clustercoefficients[0] == 0:
+            # make the widtht of bin_widht_clustercoefficients around 0
+            bins_clustercoefficients = np.array([-bin_widht_clustercoefficients/2, bin_widht_clustercoefficients/2])
 
         bin_width_eigenvector_centralities = 0.02
         min_eigenvector, max_eigenvector = min(avg_eigenvector_centralities), max(avg_eigenvector_centralities)
         global_min_eigenvector, global_max_eigenvector = min(global_min_eigenvector, min_eigenvector), max(global_max_eigenvector, max_eigenvector)
         bins_eigenvector_centralities = np.arange(min_eigenvector, max_eigenvector + bin_width_eigenvector_centralities, bin_width_eigenvector_centralities)
-
         # Average Degree Histogram
         axs[n,0].hist(avg_degrees, bins=bins_degrees,color=plot_colors[label], alpha=0.3, edgecolor='black', linewidth=1.2, label=label)
         # Average Cluster Coefficient Histogram
@@ -233,7 +235,7 @@ def make_histograms_rows(dataset, sample_folders, plot_colors, save_path="sample
         if n == len(sample_folders) - 1:
             axs[n, 1].set_xlabel("Cluster Coefficient", fontsize=6)
         # axs[n, 1].set_ylabel("Percentage (%)")
-        axs[n, 1].set_xlim(left=-1)
+        axs[n, 1].set_xlim(left=0)
 
         if n == 0:
             axs[n, 2].set_title("Avg. Eigenv. Centrality Hist.", fontsize=8)
