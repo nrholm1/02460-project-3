@@ -272,6 +272,8 @@ if __name__ == "__main__":
     parser.add_argument("--sample", action="store_true")
     parser.add_argument("--histogram", action="store_true")
     parser.add_argument("--table", action="store_true")
+    parser.add_argument("--plot-grid", default=None, type=str, choices=[None, "baseline", "gan", "vae"], help="Choose which model to plot the grid from.")
+    parser.add_argument("--plot-mean", default=None, type=str, choices=[None, "baseline", "gan", "vae"], help="Choose which model to plot the mean graph from.")
     parser.add_argument("--num-samples", type=int, default=1000)
     parser.add_argument("--gan-model-path", type=str, default=None)
     parser.add_argument("--gan-statedim", type=int, default=10)
@@ -325,7 +327,7 @@ if __name__ == "__main__":
         make_histograms_rows(dataset, sample_folders, plot_colors, save_path="samples/histograms_rows.pdf")
 
     if args.table:
-        from src.eval_metrics import compute_graph_hashes, eval_novelty, eval_unique
+        from src.eval_metrics import compute_graph_hashes, eval_novelty, eval_unique, eval_novel_and_unique
 
         dataset_hashes = compute_graph_hashes([to_dense_adj(data.edge_index).squeeze() for data in dataset], return_list=True)
         # make a list of the dataset and add half of the dataset to the list
@@ -337,6 +339,51 @@ if __name__ == "__main__":
                 gen_graph_hashes = compute_graph_hashes(samples, return_list=True)
                 novelty = eval_novelty(gen_graph_hashes, dataset_hashes)
                 uniqueness = eval_unique(gen_graph_hashes)
+                novelty_and_unique = eval_novel_and_unique(gen_graph_hashes, dataset_hashes)
                 print(f"Novelty for {label}: {novelty}")
                 print(f"Uniqueness for {label}: {uniqueness}")
+                print(f"Novelty and Uniqueness for {label}: {novelty_and_unique}")
 
+    if args.plot_grid:
+        from src.utils import plot_adj
+        import matplotlib.pyplot as plt
+
+        sample_folder = sample_folders[args.plot_grid]
+        samples = [torch.load(os.path.join(sample_folder, f)) for f in os.listdir(sample_folder)]
+
+        fig, axs = plt.subplots(4, 4, figsize=(12, 12))
+        for i in range(4):
+            for j in range(4):
+                adj = samples[i*4 + j]
+
+                plot_adj(adj, ax=axs[i, j])
+        
+        # remove axis labels
+        for ax in axs.flat:
+            ax.set(xticks=[], yticks=[])
+
+        # remove titles
+        for ax in axs.flat:
+            ax.set_title("")
+
+        plt.tight_layout()
+        plt.show()
+
+    if args.plot_mean:
+        from src.utils import plot_adj
+        import matplotlib.pyplot as plt
+
+        sample_folder = sample_folders[args.plot_mean]
+        samples = [torch.load(os.path.join(sample_folder, f)) for f in os.listdir(sample_folder)]
+
+        max_size = max([sample.size(0) for sample in samples])
+
+        mean_adj = torch.zeros(max_size, max_size)
+        for sample in samples:
+            mean_adj[:sample.size(0), :sample.size(0)] += sample
+        mean_adj /= len(samples)
+
+        plt.imshow(mean_adj, cmap='Greys', vmin=0, vmax=torch.max(mean_adj).item())
+        plt.show()
+
+    

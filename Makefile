@@ -39,7 +39,7 @@ gan-main = src/graphgan.py
 DEVICE = cpu
 
 train-vae:
-	$(PYTHON_INTERPRETER) $(vae-main) train 
+	$(PYTHON_INTERPRETER) $(vae-main) train
 
 train-gan:
 	$(PYTHON_INTERPRETER) $(gan-main) train --n-epochs 10000 \
@@ -69,4 +69,12 @@ results-histogram:
 
 results-table:
 	$(PYTHON_INTERPRETER) src/sample_histograms.py --table --vae-model-path $(VAE_MODEL_PATH) \
+	 --gan-model-path $(GAN_MODEL_PATH) --vae-embedding-dim 7 --vae-M 2 --vae-n-message-passing-rounds 5
+
+results-grid:
+	$(PYTHON_INTERPRETER) src/sample_histograms.py --plot-grid vae --vae-model-path $(VAE_MODEL_PATH) \
+	 --gan-model-path $(GAN_MODEL_PATH) --vae-embedding-dim 7 --vae-M 2 --vae-n-message-passing-rounds 5
+
+results-plot-mean:
+	$(PYTHON_INTERPRETER) src/sample_histograms.py --plot-mean vae --vae-model-path $(VAE_MODEL_PATH) \
 	 --gan-model-path $(GAN_MODEL_PATH) --vae-embedding-dim 7 --vae-M 2 --vae-n-message-passing-rounds 5
