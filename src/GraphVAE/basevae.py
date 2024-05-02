@@ -107,7 +107,7 @@ class VAE(nn.Module):
         """
         return -self.elbo(x, edge_index, batch, Adj, node_masks)
 
-    def sample(self, n_samples=1):
+    def sample(self, n_samples=1, return_probs=False):
         """
         Sample from the model.
         
@@ -116,20 +116,25 @@ class VAE(nn.Module):
            Number of samples to generate.
         """
         samples = []
+        mu_probs = torch.zeros(1, 28, 28)
         for i in range(n_samples):
             n_nodes = self.ndist.sample_N((1,)) # sample number of nodes
-            
             # sample full max_nodes x max_nodes A matrix
             z = self.prior().sample(torch.Size([1]))
             decoder_sample = self.decoder(z).sample()
+            mu_probs += self.decoder(z).base_dist.probs
             upper = torch.triu(decoder_sample, diagonal=1)
             Adj_sample = upper + upper.transpose(1, 2)
             # downsample A
             Adj_downsampled = self.mask_sample(Adj_sample, n_nodes[0])
             # store
             samples.append(Adj_downsampled)
-
-        return samples
+        
+        mu_probs /= n_samples
+        if return_probs:
+            return samples, mu_probs
+        else:
+            return samples
 
     def mask_sample(self, Adj_sample, n_nodes: int):
         mask = torch.zeros_like(Adj_sample)
@@ -184,11 +189,10 @@ class GaussianEncoder(nn.Module):
 
         Returns 
         """
-        mean = self.mu_encoder_net(x, edge_index, batch)
-        std = self.sigma_encoder_net(x, edge_index, batch)
-        
+        mean, log_std = torch.chunk(self.mu_encoder_net(x, edge_index, batch), 2, dim=-1)
+        # std = self.sigma_encoder_net(x, edge_index, batch)
         # NOTE: a small number is added to avoid error
-        return td.Independent(td.Normal(loc=mean, scale=torch.exp(std)+1e-6), 1)
+        return td.Independent(td.Normal(loc=mean, scale=torch.exp(log_std)+1e-6), 1)
         
 class BernoulliDecoder(nn.Module):
     def __init__(self, decoder_net):

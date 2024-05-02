@@ -2,6 +2,7 @@ from src.GraphVAE.vae_encoder_network import GNNEncoderNetwork, GRUGNNEncoderNet
 from src.GraphVAE.vae_decoder_network import DecoderNetwork
 from src.GraphVAE.basevae import VAE, GaussianEncoder, BernoulliDecoder, GaussianPrior
 from src.graphgan import NDist
+from src.GraphVAE.naivevae import NaiveVAE
 
 def get_encoder_networks(node_feature_dim, embedding_dim, n_message_passing_rounds, M: int):
     """
@@ -20,7 +21,7 @@ def get_encoder_networks(node_feature_dim, embedding_dim, n_message_passing_roun
     # sigma_network = GNNEncoderNetwork(node_feature_dim, embedding_dim, n_message_passing_rounds, M)
     
     mu_network = GRUGNNEncoderNetwork(node_feature_dim, embedding_dim, n_message_passing_rounds, M)
-    sigma_network = GRUGNNEncoderNetwork(node_feature_dim, embedding_dim, n_message_passing_rounds, M)
+    sigma_network = None
 
     return mu_network, sigma_network
 
@@ -30,10 +31,9 @@ def get_decoder_network(max_num_nodes: int, M: int):
     """
     return DecoderNetwork(max_num_nodes, M)
 
-
 def build_model(node_feature_dim, embedding_dim, 
                 n_message_passing_rounds, M: int, 
-                NDist_dataset
+                NDist_dataset, naive=False
                 ):
     
     ndist = NDist(NDist_dataset)
@@ -44,8 +44,12 @@ def build_model(node_feature_dim, embedding_dim,
     
     decoder_net = get_decoder_network(ndist.max_nodes, M)
     decoder = BernoulliDecoder(decoder_net)
+
+    if not naive:
+        model = VAE(prior, decoder, encoder, ndist)
+    else:
+        model = NaiveVAE(prior, decoder, encoder, ndist)
     
-    model = VAE(prior, decoder, encoder, ndist)
     return model
 
     

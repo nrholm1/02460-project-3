@@ -29,7 +29,7 @@ class GNNEncoderNetwork(nn.Module):
             ) for _ in range(self.n_message_passing_rounds)])
 
         # State output network
-        self.output_net = torch.nn.Linear(self.embedding_dim, self.M)
+        self.output_net = torch.nn.Linear(self.embedding_dim, self.M*2)
     
     def forward(self, x, edge_index, batch):
         """Evaluate neural network on a batch of graphs.
@@ -118,7 +118,7 @@ class GRUGNNEncoderNetwork(torch.nn.Module):
         self.W_hh = torch.nn.Linear(self.embedding_dim, self.embedding_dim, dtype=torch.float32)
 
         # State output network
-        self.output_net = torch.nn.Linear(self.embedding_dim, self.M, dtype=torch.float32)
+        self.output_net = torch.nn.Linear(self.embedding_dim, self.M*2, dtype=torch.float32)
     
     def reset(self, message, h):
         return self.sigmoid(self.W_mr(message) + self.W_hr(h))
