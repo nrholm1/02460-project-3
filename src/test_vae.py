@@ -26,14 +26,14 @@ def train(epochs, model, optimizer, criterion, scheduler, early_stopping_patienc
         train_accuracy = 0.
         train_loss = 0.
         for data in train_loader:
-            out = model(data.x, data.edge_index, batch=data.batch)
+            loss = model(data.x, data.edge_index, batch=data.batch)
             #loss = criterion(out, data.y.float())
 
-            loss = 0
-            # Assuming data.y contains labels for each graph
-            for i, single_output in enumerate(out):
-                target = data.y[i].expand_as(single_output)  # Ensure target is the same shape as output
-                loss += criterion(single_output, target.float())  # Compute loss for each graph
+            # loss = 0
+            # # Assuming data.y contains labels for each graph
+            # for i, single_output in enumerate(out):
+            #     target = data.y[i].expand_as(single_output)  # Ensure target is the same shape as output
+            #     loss += criterion(single_output, target.float())  # Compute loss for each graph
 
             # Gradient step
             optimizer.zero_grad()

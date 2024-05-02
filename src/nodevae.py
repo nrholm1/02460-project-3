@@ -363,45 +363,22 @@ class VGAE(nn.Module):
         print("batch shape ", batch.shape) # (1809)
         # Predict the adjacency matrix from the latent variables
         A_hat = self.decoder(z)
-        A = to_dense_adj(edge_index, batch).squeeze(0)
-        print("Elbo A shape ", A.shape) # (100,28,28) which is (batch_size, max_num_nodes, max_num_nodes)
+    
+        A = to_dense_adj(edge_index, max_num_nodes=A_hat.size(0)).squeeze(0)
+        print("Elbo A shape ", A.shape)  
         print("Elbo A_hat shape ", A_hat.shape) 
-
-        # Reconstruction error corresponds to a binary cross-entropy loss over the edge probabilities. T
-        RE = torch.nn.functional.binary_cross_entropy(A_hat, A.float(), reduction='sum')
-        print("RE shape ", RE.shape) # (100,28,28) which is (batch_size, max_num_nodes, max_num_nodes)
-        # max_nodes = batch.max().item() + 1
-        # elbo_loss = 0
-        # for i in range(max_nodes):
-        #     sub_mask = (batch == i)
-        #     sub_edge_index = filter_edges(edge_index, sub_mask)
-        #     sub_z = z[sub_mask]
-
-        #     # Create the adjacency matrix for this subgraph
-        #     sub_A_hat = self.decoder(sub_z)
-        #     sub_A = to_dense_adj(sub_edge_index, max_num_nodes=sub_mask.sum().item()).squeeze(0)
-
-        #     # Compute reconstruction error using binary cross-entropy
-        #     sub_recon_loss = torch.nn.functional.binary_cross_entropy(sub_A_hat, sub_A.float(), reduction='sum')
-
-        #     elbo_loss += sub_recon_loss
-
-        # Average the ELBO loss across all graphs
-        # elbo_loss /= max_nodes
-
-        # A = to_dense_adj(edge_index, batch).squeeze(0)
-        # A_dense, mask = to_dense_batch(x, batch, fill_value=0)
-        # A = to_dense_adj(edge_index, batch, max_num_nodes=A_dense.size(1))
-
-
         
-        # Calculate reconstruction error using binary cross-entropy
-        #RE = torch.nn.functional.binary_cross_entropy(A_hat, A.float(), reduction='sum')
-
+        # Reconstruction error corresponds to a binary cross-entropy loss over the edge probabilities. 
+        # The A_hat is shape (1809, 1809) and A is shape (1809, 1809)
+        RE = torch.nn.functional.binary_cross_entropy(A_hat, A.float(), reduction='none')    
+        RE_sum_node = RE.sum(dim=1)
+        print("RE first ", RE[0])
         KL = q.log_prob(z) - self.prior().log_prob(z)
-        #KL = td.kl_divergence(q, self.prior()).sum()
-        #elbo = (elbo_loss + KL)
-        elbo = (RE + KL).mean()
+        KL_loss = KL.sum(dim=-1)
+        print("KL first", KL_loss)
+        elbo = (RE_sum_node - KL_loss).mean()
+        
+        #elbo = (RE_sum_node + KL).mean()
         """
         Original code: 
         elbo_old = torch.mean(self.decoder(z).log_prob(x) - td.kl_divergence(q, self.prior()), dim=0)
